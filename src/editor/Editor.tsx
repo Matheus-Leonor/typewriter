@@ -7,6 +7,8 @@ import { GFM } from '@lezer/markdown';
 import { Session } from '../db';
 import { kineticExtension } from './extensions/kineticPlugin';
 import { markdownLivePreview } from './extensions/markdownLivePreview';
+import { tableAutocomplete } from './extensions/tableAutocomplete';
+import { TablePicker } from './TablePicker';
 
 export type CursorStyle = 'line' | 'block' | 'underscore';
 export type CursorBlink = 'blink' | 'breath' | 'none';
@@ -71,8 +73,10 @@ export function Editor({
   const viewRef = useRef<EditorView | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [tablePicker, setTablePicker] = useState<{ x: number; y: number } | null>(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const closeTablePicker = useCallback(() => setTablePicker(null), []);
 
   const getSelectedText = useCallback((view: EditorView) => {
     return view.state.selection.ranges
@@ -189,9 +193,40 @@ export function Editor({
     view.focus();
   }, []);
 
-  const insertTable = useCallback(() => {
-    insertText('| Coluna 1 | Coluna 2 |\n| --- | --- |\n| Valor | Valor |');
-  }, [insertText]);
+  const openTablePicker = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const coords = view.coordsAtPos(view.state.selection.main.head);
+    setTablePicker({ x: coords?.left ?? 0, y: (coords?.bottom ?? 0) + 4 });
+  }, []);
+
+  const handleTableInsert = useCallback((rows: number, cols: number) => {
+    const view = viewRef.current;
+    if (!view) return;
+    setTablePicker(null);
+
+    const headers = Array.from({ length: cols }, (_, i) => `Coluna ${i + 1}`);
+    const colWidths = headers.map((h) => Math.max(h.length, 3));
+
+    const pad = (s: string, w: number) => ` ${s.padEnd(w, ' ')} `;
+    const headerLine = '|' + headers.map((h, i) => pad(h, colWidths[i])).join('|') + '|';
+    const sepLine = '|' + colWidths.map((w) => '-'.repeat(w + 2)).join('|') + '|';
+    const emptyLine = '|' + colWidths.map((w) => ' '.repeat(w + 2)).join('|') + '|';
+
+    const lines = [headerLine, sepLine];
+    for (let i = 1; i < rows; i++) {
+      lines.push(emptyLine);
+    }
+    const text = lines.join('\n');
+
+    view.dispatch(
+      view.state.changeByRange((range) => ({
+        changes: { from: range.from, to: range.to, insert: text },
+        range: EditorSelection.cursor(range.from + text.length),
+      })),
+    );
+    view.focus();
+  }, []);
 
   const menuItems = useMemo<ContextMenuItem[]>(
     () => [
@@ -207,7 +242,7 @@ export function Editor({
       { type: 'item', label: 'Copiar como texto puro', action: copyPlainText },
       { type: 'separator' },
       { type: 'item', label: 'Inserir link', action: insertLink },
-      { type: 'item', label: 'Inserir tabela', action: insertTable },
+      { type: 'item', label: 'Inserir tabela', action: openTablePicker },
       { type: 'separator' },
       { type: 'item', label: 'Formatar JSON', action: onOpenJsonFormatter },
     ],
@@ -216,12 +251,22 @@ export function Editor({
       copySelection,
       cutSelection,
       insertLink,
-      insertTable,
+      openTablePicker,
       onOpenJsonFormatter,
       pasteClipboard,
       wrapSelection,
     ],
   );
+
+  // Listen for /tabela autocomplete event
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ left: number; top: number }>).detail;
+      setTablePicker({ x: detail.left, y: detail.top });
+    };
+    window.addEventListener('open-table-picker', handler);
+    return () => window.removeEventListener('open-table-picker', handler);
+  }, []);
 
   // Apply cursor classes to view.dom (stable across re-renders — CM6 root element)
   useEffect(() => {
@@ -246,6 +291,7 @@ export function Editor({
           EditorView.lineWrapping,
           markdown({ extensions: [GFM] }),
           markdownLivePreview(),
+          tableAutocomplete(),
           drawSelection(),    // enables .cm-cursor + .cm-cursorLayer
           editorTheme,
           EditorView.updateListener.of((u) => {
@@ -299,6 +345,23 @@ export function Editor({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [closeContextMenu, contextMenu]);
+
+  useEffect(() => {
+    if (!tablePicker) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if ((event.target as HTMLElement).closest('.table-picker')) return;
+      closeTablePicker();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeTablePicker();
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeTablePicker, tablePicker]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const view = viewRef.current;
@@ -362,6 +425,14 @@ export function Editor({
             ),
           )}
         </div>
+      )}
+      {tablePicker && (
+        <TablePicker
+          left={tablePicker.x}
+          top={tablePicker.y}
+          onInsert={handleTableInsert}
+          onClose={closeTablePicker}
+        />
       )}
     </div>
   );

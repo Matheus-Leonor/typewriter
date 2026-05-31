@@ -235,3 +235,66 @@ html:not(.flow-active) .ds-sidebar { opacity: 1; transition: opacity 1.5s ease-i
   margin: 5px 4px;
   background: var(--border);
 }
+
+/* ── Table Picker ──────────────────────────────────────────────────────────── */
+.table-picker {
+  position: fixed;
+  z-index: 950;
+  background: var(--bg-primary);
+  border: 0.5px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.24);
+  padding: 8px;
+}
+
+.table-picker__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.table-picker__row {
+  display: flex;
+  gap: 3px;
+}
+
+.table-picker__cell {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  background: var(--bg-overlay);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.table-picker__cell.active {
+  background: var(--accent);
+}
+
+.table-picker__label {
+  margin-top: 6px;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  min-height: 15px;
+}
+
+/* ── Markdown table live preview ───────────────────────────────────────────── */
+.cm-md-table-line {
+  font-family: var(--font-mono);
+  background: rgba(128, 128, 128, 0.04);
+  border-radius: 4px;
+  padding: 1px 0;
+}
+
+.cm-md-table-header-cell {
+  font-weight: 700;
+  color: var(--text-primary);
+  padding-right: 16px;
+}
+
+.cm-md-table-cell {
+  color: var(--text-secondary);
+  padding-right: 16px;
+}

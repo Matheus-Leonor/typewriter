@@ -175,6 +175,37 @@ function buildDecorations(view: EditorView): DecorationSet {
           raw.push(Decoration.replace({}).range(textEnd, to)); // hide `](url)`
           return false;
         }
+
+        // ── Tables ───────────────────────────────────────────────────────────
+        if (name === 'Table') {
+          const doc = state.doc;
+          let pos = from;
+          while (pos <= to) {
+            const line = doc.lineAt(pos);
+            const text = line.text.trim();
+            const cursorOnLine = state.doc.lineAt(sel.from).number === line.number;
+            if (/^\|?[\s\-:|]+\|?$/.test(text) && text.includes('---') && !cursorOnLine) {
+              raw.push(Decoration.replace({}).range(line.from, Math.min(line.to, to)));
+            } else {
+              raw.push(Decoration.line({ class: 'cm-md-table-line' }).range(line.from));
+            }
+            pos = line.to + 1;
+          }
+          return false;
+        }
+        if (name === 'TableDelimiter') {
+          raw.push(Decoration.replace({}).range(from, to));
+          return false;
+        }
+        if (name === 'TableCell') {
+          const parent = node.node.parent;
+          if (parent?.name === 'TableHeader') {
+            raw.push(Decoration.mark({ class: 'cm-md-table-header-cell' }).range(from, to));
+          } else if (parent?.name === 'TableRow') {
+            raw.push(Decoration.mark({ class: 'cm-md-table-cell' }).range(from, to));
+          }
+          return false;
+        }
       },
     });
   }
