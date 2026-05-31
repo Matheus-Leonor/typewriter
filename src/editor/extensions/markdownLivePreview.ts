@@ -136,6 +136,25 @@ function buildDecorations(view: EditorView): DecorationSet {
           return false;
         }
 
+        // ── Inline code ──────────────────────────────────────────────────────
+        if (name === 'InlineCode') {
+          if (sel.from <= to && sel.to >= from) return false;
+          raw.push(Decoration.mark({ class: 'cm-md-code' }).range(from, to));
+          return false;
+        }
+
+        // ── Fenced code block — apply line deco to each line for monospace + bg ──
+        if (name === 'FencedCode') {
+          const doc = state.doc;
+          let pos = from;
+          while (pos <= to) {
+            const line = doc.lineAt(pos);
+            raw.push(Decoration.line({ class: 'cm-md-fenced-line' }).range(line.from));
+            pos = line.to + 1;
+          }
+          return false;
+        }
+
         // ── Links ────────────────────────────────────────────────────────────
         if (name === 'Link') {
           if (sel.from <= to && sel.to >= from) return false;
