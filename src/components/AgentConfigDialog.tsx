@@ -1,7 +1,24 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { db } from '../db/index';
 import type { InjectionHistoryEntry } from '../db/index';
+import {
+  buildComposeInjectionPlan,
+  COMPOSE_ARTIFACTS,
+  createComposeState,
+  syncComposeAgentReferences,
+  syncComposeDirectories,
+  updateComposeSectionContent,
+  updateComposeSectionSettings,
+} from '../compose/composeModel';
+import type {
+  ComposeInjectionPlanItem,
+  ComposeInjectionMode,
+  ComposeSection,
+  ComposeSectionCategory,
+  ComposeSectionType,
+  ComposeState,
+} from '../compose/composeModel';
 
 interface Props {
   onClose: () => void;
@@ -17,10 +34,29 @@ const BUILTIN_TYPES = [
 ] as const;
 
 const BUILTIN_FILES: Set<string> = new Set(BUILTIN_TYPES.map((t) => t.file));
+const REMOVED_DEFAULT_LIBRARY_FILES = new Set([
+  'frontend-design.md',
+  'kotlin-android.md',
+  'spring-boot.md',
+  'tauri-rust.md',
+]);
 
 interface FsEntry { name: string; path: string; is_dir: boolean; }
 interface CustomTemplate { id: string; name: string; }
-interface VaultFile { name: string; path: string; displayName: string; }
+type VaultLibrarySectionId = 'pinned' | 'notes' | 'modules';
+type VaultFileKind = 'template' | 'skill' | 'doc' | 'note';
+interface VaultFile {
+  name: string;
+  path: string;
+  displayName: string;
+  kind: VaultFileKind;
+  sectionId: VaultLibrarySectionId;
+}
+interface VaultLibrarySection {
+  id: VaultLibrarySectionId;
+  title: string;
+  files: VaultFile[];
+}
 
 function joinPath(base: string, ...parts: string[]): string {
   const sep = base.includes('\\') ? '\\' : '/';
@@ -57,9 +93,47 @@ function localTimestamp(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function displayMarkdownName(name: string): string {
+  return name.replace(/\.md$/, '').replace(/-/g, ' ');
+}
+
+function shouldShowLibraryFile(entry: FsEntry): boolean {
+  return !entry.is_dir && entry.name.endsWith('.md') && !REMOVED_DEFAULT_LIBRARY_FILES.has(entry.name);
+}
+
+function buildAgentContent(params: {
+  selected: string;
+  selectedArtifacts: Set<ComposeSectionType>;
+  templateContent: string;
+  checkedLibraryFiles: Set<string>;
+  fileContents: Map<string, string>;
+}): string {
+  const libraryNames = [...params.checkedLibraryFiles]
+    .map((p) => p.split(/[/\\]/).pop()?.replace(/\.md$/, '') ?? '')
+    .filter(Boolean);
+  const artifactNames = COMPOSE_ARTIFACTS
+    .filter((option) => params.selectedArtifacts.has(option.id))
+    .map((option) => option.name);
+
+  const header = [
+    `<!-- gerado pelo TypeWriter em ${localTimestamp()} -->`,
+    `<!-- template: ${getTemplateSlug(params.selected)} | artefatos: ${artifactNames.join(', ')} | biblioteca: ${libraryNames.join(', ')} -->`,
+    '',
+  ].join('\n');
+
+  const parts = [header, stripFrontmatter(params.templateContent)];
+
+  for (const path of params.checkedLibraryFiles) {
+    const c = params.fileContents.get(path);
+    if (c) parts.push('\n---\n', stripFrontmatter(c));
+  }
+
+  return parts.join('\n');
+}
+
 export function AgentConfigDialog({ onClose, vaultPath }: Props) {
   // Step 1
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [selected, setSelected] = useState<string | null>(null);
   const [customs, setCustoms] = useState<CustomTemplate[]>([]);
   const [newName, setNewName] = useState('');
@@ -67,18 +141,22 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
   const [saving, setSaving] = useState(false);
 
   // Step 2
-  const [loadingStep2, setLoadingStep2] = useState(false);
-  const [skills, setSkills] = useState<VaultFile[]>([]);
-  const [docs, setDocs] = useState<VaultFile[]>([]);
-  const [checkedSkills, setCheckedSkills] = useState<Set<string>>(new Set());
-  const [checkedDocs, setCheckedDocs] = useState<Set<string>>(new Set());
-  const [templateContent, setTemplateContent] = useState('');
-  const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
+  const [selectedArtifacts, setSelectedArtifacts] = useState<Set<ComposeSectionType>>(new Set());
 
   // Step 3
+  const [loadingStep2, setLoadingStep2] = useState(false);
+  const [librarySections, setLibrarySections] = useState<VaultLibrarySection[]>([]);
+  const [checkedLibraryFiles, setCheckedLibraryFiles] = useState<Set<string>>(new Set());
+  const [newMarkdownName, setNewMarkdownName] = useState('');
+  const [creatingMarkdown, setCreatingMarkdown] = useState(false);
+  const [templateContent, setTemplateContent] = useState('');
+  const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
+  const [compose, setCompose] = useState<ComposeState | null>(null);
+  const [selectedComposeSectionId, setSelectedComposeSectionId] = useState<string | null>(null);
+  const lastGeneratedAgentContentRef = useRef('');
+
+  // Step 4
   const [targetPath, setTargetPath] = useState('');
-  const [filename, setFilename] = useState<'CLAUDE.md' | 'AGENTS.md' | 'custom'>('CLAUDE.md');
-  const [customFilename, setCustomFilename] = useState('');
   const [recentPaths, setRecentPaths] = useState<string[]>([]);
   const [showPathDropdown, setShowPathDropdown] = useState(false);
   const [injecting, setInjecting] = useState(false);
@@ -138,104 +216,255 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     }
   }, [newName, newContent, vaultPath, loadCustoms]);
 
-  const goToStep2 = useCallback(async () => {
+  const loadVaultLibrary = useCallback(async (): Promise<{
+    sections: VaultLibrarySection[];
+    files: VaultFile[];
+  }> => {
+    const listMarkdowns = async (subdir: string) => {
+      try {
+        return await invoke<FsEntry[]>('list_vault_directory', { vaultPath, subdir });
+      } catch {
+        return [];
+      }
+    };
+
+    const [templateEntries, noteEntries, skillEntries, docEntries] = await Promise.all([
+      listMarkdowns('agents/templates'),
+      listMarkdowns('Notas'),
+      listMarkdowns('skills'),
+      listMarkdowns('docs'),
+    ]);
+
+    const toVaultFile = (
+      e: FsEntry,
+      kind: VaultFileKind,
+      sectionId: VaultLibrarySectionId,
+    ): VaultFile => ({
+      name: e.name,
+      path: e.path,
+      displayName: displayMarkdownName(e.name),
+      kind,
+      sectionId,
+    });
+
+    const pinned = templateEntries
+      .filter((e) => shouldShowLibraryFile(e) && BUILTIN_FILES.has(e.name))
+      .map((e) => toVaultFile(e, 'template', 'pinned'));
+    const notes = noteEntries
+      .filter(shouldShowLibraryFile)
+      .map((e) => toVaultFile(e, 'note', 'notes'));
+    const modules = [
+      ...templateEntries
+        .filter((e) => shouldShowLibraryFile(e) && !BUILTIN_FILES.has(e.name))
+        .map((e) => toVaultFile(e, 'template', 'modules')),
+      ...skillEntries.filter(shouldShowLibraryFile).map((e) => toVaultFile(e, 'skill', 'modules')),
+      ...docEntries.filter(shouldShowLibraryFile).map((e) => toVaultFile(e, 'doc', 'modules')),
+    ];
+
+    const sections: VaultLibrarySection[] = [
+      { id: 'pinned', title: 'Fixados', files: pinned },
+      { id: 'notes', title: 'Notas', files: notes },
+      { id: 'modules', title: 'Módulos / Templates', files: modules },
+    ];
+
+    return { sections, files: [...pinned, ...notes, ...modules] };
+  }, [vaultPath]);
+
+  const goToStep2 = useCallback(() => {
     if (!selected || selected === '__create_new__') return;
+    setSelectedArtifacts(new Set());
+    setCompose(null);
+    setSelectedComposeSectionId(null);
+    setStep(2);
+  }, [selected]);
+
+  const goToStep3 = useCallback(async () => {
+    if (selectedArtifacts.size === 0 || !selected || selected === '__create_new__') return;
     setLoadingStep2(true);
     try {
-      const [skillEntries, docEntries] = await Promise.all([
-        invoke<FsEntry[]>('list_vault_directory', { vaultPath, subdir: 'skills' }),
-        invoke<FsEntry[]>('list_vault_directory', { vaultPath, subdir: 'docs' }),
-      ]);
-
-      const toVaultFile = (e: FsEntry): VaultFile => ({
-        name: e.name,
-        path: e.path,
-        displayName: e.name.replace(/\.md$/, '').replace(/-/g, ' '),
-      });
-
-      const skillFiles = skillEntries.filter((e) => !e.is_dir).map(toVaultFile);
-      const docFiles = docEntries.filter((e) => !e.is_dir).map(toVaultFile);
+      const { sections, files } = await loadVaultLibrary();
 
       const templatePath = joinPath(vaultPath, 'agents', 'templates', getTemplateFile(selected));
       const tmplContent = await invoke<string>('read_vault_file', { path: templatePath });
 
       const contents = new Map<string, string>();
       await Promise.all(
-        [...skillFiles, ...docFiles].map(async (f) => {
+        files.map(async (f) => {
           const c = await invoke<string>('read_vault_file', { path: f.path });
           contents.set(f.path, c);
         }),
       );
 
-      setSkills(skillFiles);
-      setDocs(docFiles);
+      setLibrarySections(sections);
       setTemplateContent(tmplContent);
       setFileContents(contents);
-      setCheckedSkills(new Set());
-      setCheckedDocs(new Set());
-      setStep(2);
+      setCheckedLibraryFiles(new Set());
+      const initialAgentContent = buildAgentContent({
+        selected,
+        selectedArtifacts,
+        templateContent: tmplContent,
+        checkedLibraryFiles: new Set(),
+        fileContents: contents,
+      });
+      lastGeneratedAgentContentRef.current = initialAgentContent;
+      const nextCompose = createComposeState({
+        templateId: selected,
+        templateSlug: getTemplateSlug(selected),
+        selectedTypes: selectedArtifacts,
+        targetDirectory: targetPath,
+        agentContent: initialAgentContent,
+      });
+      setCompose(nextCompose);
+      setSelectedComposeSectionId(nextCompose.primarySectionId || nextCompose.sections[0]?.id || null);
+      setStep(3);
     } catch (err) {
       console.error(err);
     } finally {
       setLoadingStep2(false);
     }
-  }, [selected, vaultPath]);
+  }, [loadVaultLibrary, selected, selectedArtifacts, targetPath, vaultPath]);
 
   const goBack = useCallback(() => {
     setStep(1);
-    setCheckedSkills(new Set());
-    setCheckedDocs(new Set());
+    setSelectedArtifacts(new Set());
+    setCheckedLibraryFiles(new Set());
+    setCompose(null);
+    setSelectedComposeSectionId(null);
   }, []);
 
-  const preview = useMemo(() => {
-    if (step < 2 || !selected) return '';
+  const agentContent = useMemo(() => {
+    if (step < 3 || !selected) return '';
 
-    const skillNames = [...checkedSkills]
-      .map((p) => p.split(/[/\\]/).pop()?.replace(/\.md$/, '') ?? '')
-      .filter(Boolean);
+    return buildAgentContent({
+      selected,
+      selectedArtifacts,
+      templateContent,
+      checkedLibraryFiles,
+      fileContents,
+    });
+  }, [step, selected, selectedArtifacts, checkedLibraryFiles, templateContent, fileContents]);
 
-    const header = [
-      `<!-- gerado pelo TypeWriter em ${localTimestamp()} -->`,
-      `<!-- template: ${getTemplateSlug(selected)} | skills: ${skillNames.join(', ')} -->`,
-      '',
-    ].join('\n');
+  useEffect(() => {
+    if (step < 3 || !selected) return;
+    setCompose((current) => {
+      if (!current) return current;
+      const previousGenerated = lastGeneratedAgentContentRef.current;
+      lastGeneratedAgentContentRef.current = agentContent;
+      return syncComposeAgentReferences({
+        ...current,
+        sections: current.sections.map((section) => ({
+          ...section,
+          content:
+            section.tipo === 'agent' &&
+            (section.content === previousGenerated || section.content.trim() === '')
+              ? agentContent
+              : section.content,
+        })),
+        updatedAt: Date.now(),
+      });
+    });
+  }, [agentContent, step, selected]);
 
-    const parts = [header, stripFrontmatter(templateContent)];
+  useEffect(() => {
+    setCompose((current) => syncComposeDirectories(current, targetPath));
+  }, [targetPath]);
 
-    for (const path of checkedSkills) {
-      const c = fileContents.get(path);
-      if (c) parts.push('\n---\n', stripFrontmatter(c));
+  const selectedComposeSection = useMemo(() => {
+    if (!compose) return null;
+    return (
+      compose.sections.find((section) => section.id === selectedComposeSectionId) ??
+      compose.sections.find((section) => section.id === compose.primarySectionId) ??
+      compose.sections[0] ??
+      null
+    );
+  }, [compose, selectedComposeSectionId]);
+
+  useEffect(() => {
+    if (!compose) {
+      setSelectedComposeSectionId(null);
+      return;
     }
-    for (const path of checkedDocs) {
-      const c = fileContents.get(path);
-      if (c) parts.push('\n---\n', stripFrontmatter(c));
+
+    if (!selectedComposeSectionId || !compose.sections.some((section) => section.id === selectedComposeSectionId)) {
+      setSelectedComposeSectionId(compose.primarySectionId || compose.sections[0]?.id || null);
     }
+  }, [compose, selectedComposeSectionId]);
 
-    return parts.join('\n');
-  }, [step, selected, checkedSkills, checkedDocs, templateContent, fileContents]);
+  const handleComposeSectionChange = useCallback((sectionId: string, content: string) => {
+    setCompose((current) => updateComposeSectionContent(current, sectionId, content));
+  }, []);
 
-  const toggleSkill = useCallback((path: string) => {
-    setCheckedSkills((prev) => {
+  const handleComposeSectionSettingsChange = useCallback((
+    sectionId: string,
+    patch: Partial<Pick<
+      ComposeSection,
+      'tipo' | 'titulo' | 'filename' | 'directory' | 'isPinned' | 'category' | 'includeInAgent' | 'injectionMode'
+    >>,
+  ) => {
+    setCompose((current) => updateComposeSectionSettings(current, sectionId, patch));
+  }, []);
+
+  const toggleArtifact = useCallback((artifact: ComposeSectionType) => {
+    setSelectedArtifacts((prev) => {
+      const next = new Set(prev);
+      if (next.has(artifact)) next.delete(artifact); else next.add(artifact);
+      return next;
+    });
+  }, []);
+
+  const toggleLibraryFile = useCallback((path: string) => {
+    setCheckedLibraryFiles((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path); else next.add(path);
       return next;
     });
   }, []);
 
-  const toggleDoc = useCallback((path: string) => {
-    setCheckedDocs((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
-      return next;
-    });
-  }, []);
+  const handleCreateMarkdown = useCallback(async () => {
+    const slug = slugify(newMarkdownName) || 'novo-markdown';
+    setCreatingMarkdown(true);
+    try {
+      const notesDir = joinPath(vaultPath, 'Notas');
+      let path: string;
+      try {
+        path = await invoke<string>('create_note', { dirPath: notesDir, name: `${slug}.md` });
+      } catch {
+        await invoke('create_folder', { dirPath: vaultPath, name: 'Notas' });
+        path = await invoke<string>('create_note', { dirPath: notesDir, name: `${slug}.md` });
+      }
+      const file: VaultFile = {
+        name: `${slug}.md`,
+        path,
+        displayName: displayMarkdownName(`${slug}.md`),
+        kind: 'note',
+        sectionId: 'notes',
+      };
+      setLibrarySections((current) =>
+        current.map((section) =>
+          section.id === 'notes' ? { ...section, files: [file, ...section.files] } : section,
+        ),
+      );
+      setFileContents((current) => {
+        const next = new Map(current);
+        next.set(path, '');
+        return next;
+      });
+      setCheckedLibraryFiles((current) => new Set(current).add(path));
+      setNewMarkdownName('');
+    } catch (err) {
+      console.error(err);
+      setToastMsg('Erro ao criar markdown vazio');
+    } finally {
+      setCreatingMarkdown(false);
+    }
+  }, [newMarkdownName, vaultPath]);
 
-  const goToStep3 = useCallback(async () => {
+  const goToStep4 = useCallback(async () => {
     try {
       const recents = await db.injections.getRecentPaths(5);
       setRecentPaths(recents);
     } catch { /* non-blocking */ }
-    setStep(3);
+    setStep(4);
   }, []);
 
   const handlePickFolder = useCallback(async () => {
@@ -246,42 +475,63 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
   }, []);
 
   const handleInject = useCallback(async () => {
-    const actualFilename = filename === 'custom' ? customFilename.trim() : filename;
-    if (!actualFilename || !targetPath) return;
+    const plan = buildComposeInjectionPlan(compose);
+    if (plan.length === 0 || plan.some((item) => item.errors.length > 0)) return;
     setInjecting(true);
     try {
-      await invoke('inject_agent_file', { targetPath, content: preview, filename: actualFilename });
-      const toNames = (paths: Set<string>) =>
-        [...paths].map((p) => p.split(/[/\\]/).pop()?.replace(/\.md$/, '') ?? '').filter(Boolean);
+      for (const item of plan) {
+        await invoke('inject_agent_file', {
+          targetPath: item.directory,
+          content: item.content,
+          filename: item.filename,
+          mode: item.mode,
+        });
+      }
+      const selectedLibraryItems = librarySections.flatMap((section) =>
+        section.files.filter((file) => checkedLibraryFiles.has(file.path)),
+      );
+      const toNames = (kind: VaultFileKind) =>
+        selectedLibraryItems
+          .filter((file) => file.kind === kind)
+          .map((file) => file.name.replace(/\.md$/, ''));
       const entry: InjectionHistoryEntry = {
         id: crypto.randomUUID(),
         template_name: getTemplateSlug(selected!),
-        skills: JSON.stringify(toNames(checkedSkills)),
-        docs: JSON.stringify(toNames(checkedDocs)),
-        target_path: targetPath,
-        filename: actualFilename,
+        skills: JSON.stringify(toNames('skill')),
+        docs: JSON.stringify([
+          ...toNames('doc'),
+          ...toNames('note'),
+          ...toNames('template'),
+        ]),
+        target_path: plan.find((item) => item.isPrimary)?.directory ?? plan[0].directory,
+        filename: plan.find((item) => item.isPrimary)?.filename ?? plan[0].filename,
       };
       await db.injections.saveHistory(entry);
-      setRecentPaths((prev) => [targetPath, ...prev.filter((p) => p !== targetPath)].slice(0, 5));
-      setToastMsg(`${actualFilename} injetado com sucesso`);
+      const injectedDirectories = [...new Set(plan.map((item) => item.directory))];
+      setRecentPaths((prev) => [...injectedDirectories, ...prev.filter((p) => !injectedDirectories.includes(p))].slice(0, 5));
+      setToastMsg(`${plan.length} arquivo${plan.length === 1 ? '' : 's'} injetado${plan.length === 1 ? '' : 's'} com sucesso`);
     } catch (err) {
       console.error(err);
       setToastMsg('Erro ao injetar — veja o console');
     } finally {
       setInjecting(false);
     }
-  }, [filename, customFilename, targetPath, preview, checkedSkills, checkedDocs, selected]);
+  }, [compose, checkedLibraryFiles, librarySections, selected]);
 
   const isCreateNew = selected === '__create_new__';
   const canProceed = selected !== null && selected !== '__create_new__';
+  const canProceedArtifacts = selectedArtifacts.size > 0;
   const canSave = slugify(newName).length > 0 && newContent.trim().length > 0;
-  const actualInjectFilename = filename === 'custom' ? customFilename.trim() : filename;
-  const canInject = !!targetPath && !!actualInjectFilename;
+  const injectionPlan = useMemo(() => buildComposeInjectionPlan(compose), [compose]);
+  const injectionErrors = injectionPlan.flatMap((item) => item.errors.map((error) => `${item.title}: ${error}`));
+  const canInject = injectionPlan.length > 0 && injectionErrors.length === 0;
+  const composeSectionsCount = compose?.sections.length ?? selectedArtifacts.size;
 
   const stepHint =
     step === 1 ? 'Passo 1 — Escolha o contexto'
-    : step === 2 ? 'Passo 2 — Skills & Docs'
-    : 'Passo 3 — Injetar';
+    : step === 2 ? 'Passo 2 — O que você quer criar?'
+    : step === 3 ? 'Passo 3 — Compor'
+    : 'Passo 4 — Revisar e injetar';
 
   return (
     <>
@@ -294,8 +544,8 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         onClick={(e) => e.stopPropagation()}
         style={{
           ...dialogStyle,
-          width: step === 2 ? 960 : 720,
-          maxHeight: step === 2 ? 640 : step === 3 ? 480 : 560,
+          width: step === 3 ? 1120 : 720,
+          maxHeight: step === 3 ? 640 : step === 4 ? 480 : 560,
         }}
       >
         {/* Header */}
@@ -391,38 +641,73 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
 
         {/* Step 2 body */}
         {step === 2 && (
-          <div style={step2BodyStyle}>
-            {/* Left panel — checklist */}
-            <div style={leftPanelStyle}>
-              <ChecklistSection
-                title="Skills"
-                files={skills}
-                checked={checkedSkills}
-                onToggle={toggleSkill}
-              />
-              <ChecklistSection
-                title="Docs"
-                files={docs}
-                checked={checkedDocs}
-                onToggle={toggleDoc}
-              />
+          <div style={bodyStyle}>
+            <div>
+              <div style={sectionLabelStyle}>O que você quer criar?</div>
+              <p style={helperTextStyle}>Selecione um ou mais artefatos para este contexto.</p>
             </div>
 
-            {/* Divider */}
-            <div style={panelDividerStyle} />
-
-            {/* Right panel — preview */}
-            <div style={rightPanelStyle}>
-              <div style={previewLabelStyle}>Preview</div>
-              <PreviewContent content={preview} />
+            <div style={gridStyle}>
+              {COMPOSE_ARTIFACTS.map((artifact) => (
+                <ArtifactCard
+                  key={artifact.id}
+                  icon={artifact.icon}
+                  name={artifact.name}
+                  active={selectedArtifacts.has(artifact.id)}
+                  onClick={() => toggleArtifact(artifact.id)}
+                />
+              ))}
             </div>
           </div>
         )}
 
         {/* Step 3 body */}
         {step === 3 && (
+          <div style={step2BodyStyle}>
+            {/* Left panel — markdown library */}
+            <div style={leftPanelStyle}>
+              <MarkdownLibrary
+                sections={librarySections}
+                checked={checkedLibraryFiles}
+                newMarkdownName={newMarkdownName}
+                creatingMarkdown={creatingMarkdown}
+                onToggle={toggleLibraryFile}
+                onNewMarkdownNameChange={setNewMarkdownName}
+                onCreateMarkdown={handleCreateMarkdown}
+              />
+            </div>
+
+            {/* Divider */}
+            <div style={panelDividerStyle} />
+
+            {/* Right panel — compose editor */}
+            <div style={rightPanelStyle}>
+              <div style={previewLabelStyle}>
+                Compose · {composeSectionsCount} seção{composeSectionsCount === 1 ? '' : 'es'} editável
+              </div>
+              <ComposeEditor
+                compose={compose}
+                selectedSectionId={selectedComposeSection?.id ?? null}
+                onSelectSection={setSelectedComposeSectionId}
+                onChangeSection={handleComposeSectionChange}
+              />
+            </div>
+
+            <div style={panelDividerStyle} />
+
+            <div style={inspectorPanelStyle}>
+              <ComposeInspector
+                section={selectedComposeSection}
+                onChange={handleComposeSectionSettingsChange}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Step 4 body */}
+        {step === 4 && (
           <div style={bodyStyle}>
-            <div style={sectionLabelStyle}>Diretório de destino</div>
+            <div style={sectionLabelStyle}>Diretório base</div>
 
             <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -453,33 +738,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
               )}
             </div>
 
-            <div style={sectionLabelStyle}>Nome do arquivo</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {(['CLAUDE.md', 'AGENTS.md', 'custom'] as const).map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => setFilename(opt)}
-                  style={{
-                    ...filenameBtnBase,
-                    background: filename === opt ? 'var(--bg-overlay)' : 'var(--bg-surface)',
-                    border: filename === opt ? '1.5px solid var(--text-primary)' : '0.5px solid var(--border)',
-                    fontWeight: filename === opt ? 500 : 400,
-                  }}
-                >
-                  {opt === 'custom' ? 'Custom…' : opt}
-                </button>
-              ))}
-            </div>
-
-            {filename === 'custom' && (
-              <input
-                value={customFilename}
-                onChange={(e) => setCustomFilename(e.target.value)}
-                placeholder="nome-do-arquivo.md"
-                style={inputStyle}
-                autoFocus
-              />
-            )}
+            <InjectionReview plan={injectionPlan} errors={injectionErrors} />
 
             {toastMsg && (
               <div style={toastStyle}>
@@ -513,15 +772,32 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
               <button onClick={goBack} style={ghostBtnStyle}>← Voltar</button>
               <button
                 onClick={goToStep3}
-                style={{ ...actionBtnStyle, marginLeft: 'auto' }}
+                disabled={!canProceedArtifacts || loadingStep2}
+                style={{
+                  ...actionBtnStyle,
+                  marginLeft: 'auto',
+                  opacity: canProceedArtifacts ? 1 : 0.35,
+                  cursor: canProceedArtifacts ? 'pointer' : 'default',
+                }}
               >
-                Próximo →
+                {loadingStep2 ? 'Carregando…' : 'Próximo →'}
               </button>
             </>
           )}
           {step === 3 && (
             <>
               <button onClick={() => setStep(2)} style={ghostBtnStyle}>← Voltar</button>
+              <button
+                onClick={goToStep4}
+                style={{ ...actionBtnStyle, marginLeft: 'auto' }}
+              >
+                Próximo →
+              </button>
+            </>
+          )}
+          {step === 4 && (
+            <>
+              <button onClick={() => setStep(3)} style={ghostBtnStyle}>← Voltar</button>
               <button
                 onClick={handleInject}
                 disabled={!canInject || injecting}
@@ -539,6 +815,35 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         </div>
       </div>
     </>
+  );
+}
+
+function ArtifactCard({
+  icon, name, active, onClick,
+}: {
+  icon: string;
+  name: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...cardBase,
+        background: active ? 'var(--bg-overlay)' : 'var(--bg-surface)',
+        border: active ? '1.5px solid var(--text-primary)' : '0.5px solid var(--border)',
+      }}
+      aria-pressed={active}
+    >
+      <span
+        className="material-symbols-outlined"
+        style={{ fontSize: 20, color: active ? 'var(--text-primary)' : 'var(--text-muted)' }}
+      >
+        {icon}
+      </span>
+      <span style={{ ...cardNameStyle, fontWeight: active ? 500 : 400 }}>{name}</span>
+    </button>
   );
 }
 
@@ -570,63 +875,365 @@ function ContextCard({
   );
 }
 
-function ChecklistSection({
-  title, files, checked, onToggle,
+function MarkdownLibrary({
+  sections,
+  checked,
+  newMarkdownName,
+  creatingMarkdown,
+  onToggle,
+  onNewMarkdownNameChange,
+  onCreateMarkdown,
 }: {
-  title: string;
-  files: VaultFile[];
+  sections: VaultLibrarySection[];
   checked: Set<string>;
+  newMarkdownName: string;
+  creatingMarkdown: boolean;
   onToggle: (path: string) => void;
+  onNewMarkdownNameChange: (value: string) => void;
+  onCreateMarkdown: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={sectionLabelStyle}>{title}</div>
-      {files.length === 0 && (
-        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', padding: '2px 0 8px' }}>
-          Nenhum arquivo encontrado
-        </span>
-      )}
-      {files.map((f) => (
-        <label key={f.path} style={checkItemStyle}>
-          <input
-            type="checkbox"
-            checked={checked.has(f.path)}
-            onChange={() => onToggle(f.path)}
-            style={{ accentColor: 'var(--accent)', margin: 0, flexShrink: 0 }}
-          />
-          <span style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-sm)', lineHeight: 1.3 }}>
-            {f.displayName}
-          </span>
-        </label>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={libraryCreateStyle}>
+        <input
+          value={newMarkdownName}
+          onChange={(e) => onNewMarkdownNameChange(e.target.value)}
+          placeholder="novo markdown"
+          style={libraryInputStyle}
+        />
+        <button
+          onClick={onCreateMarkdown}
+          disabled={creatingMarkdown}
+          style={{ ...libraryCreateBtnStyle, opacity: creatingMarkdown ? 0.45 : 1 }}
+          title="Criar markdown vazio em Notas"
+          aria-label="Criar markdown vazio"
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: 15 }}>add</span>
+        </button>
+      </div>
+
+      {sections.map((section) => (
+        <div key={section.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={sectionLabelStyle}>{section.title}</div>
+          {section.files.length === 0 && (
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', padding: '2px 0 8px' }}>
+              Nenhum markdown encontrado
+            </span>
+          )}
+          {section.files.map((f) => (
+            <label key={f.path} style={checkItemStyle}>
+              <input
+                type="checkbox"
+                checked={checked.has(f.path)}
+                onChange={() => onToggle(f.path)}
+                style={{ accentColor: 'var(--accent)', margin: 0, flexShrink: 0 }}
+              />
+              <span style={libraryItemTextStyle}>
+                <span style={libraryItemNameStyle}>{f.displayName}</span>
+                <span style={libraryItemKindStyle}>{f.kind}</span>
+              </span>
+            </label>
+          ))}
+        </div>
       ))}
     </div>
   );
 }
 
-function PreviewContent({ content }: { content: string }) {
-  const lines = content.split('\n');
+function ComposeEditor({
+  compose,
+  selectedSectionId,
+  onSelectSection,
+  onChangeSection,
+}: {
+  compose: ComposeState | null;
+  selectedSectionId: string | null;
+  onSelectSection: (sectionId: string) => void;
+  onChangeSection: (sectionId: string, content: string) => void;
+}) {
+  if (!compose) {
+    return (
+      <div style={composeEmptyStyle}>
+        Nenhuma seção carregada.
+      </div>
+    );
+  }
 
   return (
-    <div style={previewScrollStyle}>
-      <pre style={preStyle}>
-        {lines.map((line, i) => (
-          <span key={i} style={lineStyle(line)}>
-            {line}
-            {'\n'}
-          </span>
-        ))}
-      </pre>
+    <div style={composeScrollStyle}>
+      {compose.sections.map((section) => (
+        <ComposeSectionEditor
+          key={section.id}
+          section={section}
+          isPrimary={section.id === compose.primarySectionId}
+          isSelected={section.id === selectedSectionId}
+          onSelect={() => onSelectSection(section.id)}
+          onChange={(content) => onChangeSection(section.id, content)}
+        />
+      ))}
     </div>
   );
 }
 
-function lineStyle(line: string): React.CSSProperties {
-  if (line.startsWith('# '))  return { fontWeight: 700, opacity: 1 };
-  if (line.startsWith('## ')) return { fontWeight: 600, opacity: 0.9 };
-  if (line.startsWith('### ')) return { fontWeight: 500, opacity: 0.85 };
-  if (line.startsWith('<!--') && line.endsWith('-->')) return { opacity: 0.4 };
-  if (line === '---') return { opacity: 0.3 };
-  return { opacity: 0.75 };
+function ComposeSectionEditor({
+  section,
+  isPrimary,
+  isSelected,
+  onSelect,
+  onChange,
+}: {
+  section: ComposeSection;
+  isPrimary: boolean;
+  isSelected: boolean;
+  onSelect: () => void;
+  onChange: (content: string) => void;
+}) {
+  return (
+    <section
+      style={{
+        ...composeSectionStyle,
+        border: isSelected ? '1px solid var(--text-primary)' : composeSectionStyle.border,
+      }}
+      onClick={onSelect}
+    >
+      <div style={composeSectionHeaderStyle}>
+        <span className="material-symbols-outlined" style={composeSectionIconStyle}>
+          {COMPOSE_ARTIFACTS.find((artifact) => artifact.id === section.tipo)?.icon ?? 'description'}
+        </span>
+        <div style={composeSectionTitleWrapStyle}>
+          <strong style={composeSectionTitleStyle}>{section.titulo}</strong>
+          <span style={composeSectionMetaStyle}>
+            {section.filename}{isPrimary ? ' · principal' : ''}
+          </span>
+        </div>
+      </div>
+      <textarea
+        value={section.content}
+        onFocus={onSelect}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        style={composeTextareaStyle}
+        aria-label={`Editar seção ${section.titulo}`}
+      />
+    </section>
+  );
+}
+
+function ComposeInspector({
+  section,
+  onChange,
+}: {
+  section: ComposeSection | null;
+  onChange: (
+    sectionId: string,
+    patch: Partial<Pick<
+      ComposeSection,
+      'tipo' | 'titulo' | 'filename' | 'directory' | 'isPinned' | 'category' | 'includeInAgent' | 'injectionMode'
+    >>,
+  ) => void;
+}) {
+  if (!section) {
+    return (
+      <aside style={inspectorEmptyStyle}>
+        Selecione uma seção para configurar.
+      </aside>
+    );
+  }
+
+  const updateType = (tipo: ComposeSectionType) => {
+    const artifact = COMPOSE_ARTIFACTS.find((item) => item.id === tipo);
+    onChange(section.id, {
+      tipo,
+      titulo: artifact?.name ?? section.titulo,
+      filename: section.filename.trim() ? section.filename : artifact?.defaultFilename ?? section.filename,
+    });
+  };
+
+  return (
+    <aside style={inspectorStyle}>
+      <div>
+        <div style={inspectorTitleStyle}>Inspector</div>
+        <div style={inspectorSubtitleStyle}>{section.titulo}</div>
+      </div>
+
+      <InspectorField label="Tipo">
+        <select
+          value={section.tipo}
+          onChange={(e) => updateType(e.target.value as ComposeSectionType)}
+          style={inspectorInputStyle}
+        >
+          {COMPOSE_ARTIFACTS.map((artifact) => (
+            <option key={artifact.id} value={artifact.id}>{artifact.name}</option>
+          ))}
+        </select>
+      </InspectorField>
+
+      <InspectorField label="Nome do arquivo">
+        <input
+          value={section.filename}
+          onChange={(e) => onChange(section.id, { filename: e.target.value })}
+          placeholder="arquivo.md"
+          style={inspectorInputStyle}
+        />
+      </InspectorField>
+
+      <InspectorField label="Diretório destino">
+        <input
+          value={section.directory}
+          onChange={(e) => onChange(section.id, { directory: e.target.value })}
+          placeholder="C:\\projeto"
+          style={inspectorInputStyle}
+        />
+      </InspectorField>
+
+      <InspectorField label="Categoria do default">
+        <select
+          value={section.category}
+          onChange={(e) => onChange(section.id, { category: e.target.value as ComposeSectionCategory })}
+          style={inspectorInputStyle}
+        >
+          <option value="primary">Principal</option>
+          <option value="artifact">Artefato</option>
+        </select>
+      </InspectorField>
+
+      <InspectorField label="Modo de injeção">
+        <select
+          value={section.injectionMode}
+          onChange={(e) => onChange(section.id, { injectionMode: e.target.value as ComposeInjectionMode })}
+          style={inspectorInputStyle}
+        >
+          <option value="create">Criar</option>
+          <option value="overwrite">Sobrescrever</option>
+          <option value="append">Anexar</option>
+        </select>
+      </InspectorField>
+
+      <label style={inspectorCheckStyle}>
+        <input
+          type="checkbox"
+          checked={section.isPinned}
+          onChange={(e) => onChange(section.id, { isPinned: e.target.checked })}
+          style={inspectorCheckboxStyle}
+        />
+        <span>
+          <strong style={inspectorCheckTitleStyle}>Fixar como default</strong>
+          <span style={inspectorCheckHintStyle}>Usar esta seção como principal.</span>
+        </span>
+      </label>
+
+      <label style={inspectorCheckStyle}>
+        <input
+          type="checkbox"
+          checked={section.includeInAgent}
+          onChange={(e) => onChange(section.id, { includeInAgent: e.target.checked })}
+          style={inspectorCheckboxStyle}
+        />
+        <span>
+          <strong style={inspectorCheckTitleStyle}>Importar no Agent</strong>
+          <span style={inspectorCheckHintStyle}>Referenciar este markdown no agente gerado.</span>
+        </span>
+      </label>
+    </aside>
+  );
+}
+
+function InspectorField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label style={inspectorFieldStyle}>
+      <span style={inspectorLabelStyle}>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function InjectionReview({
+  plan,
+  errors,
+}: {
+  plan: ComposeInjectionPlanItem[];
+  errors: string[];
+}) {
+  const agentReferences = plan.flatMap((item) => item.references);
+
+  return (
+    <div style={reviewWrapStyle}>
+      <div style={reviewHeaderStyle}>
+        <div>
+          <div style={reviewTitleStyle}>Revisao final</div>
+          <div style={reviewSubtitleStyle}>
+            {plan.length} arquivo{plan.length === 1 ? '' : 's'} pronto{plan.length === 1 ? '' : 's'} para injecao
+          </div>
+        </div>
+        {errors.length > 0 && (
+          <span style={reviewErrorBadgeStyle}>Bloqueado</span>
+        )}
+      </div>
+
+      <div style={reviewListStyle}>
+        {plan.map((item) => (
+          <div key={item.sectionId} style={reviewItemStyle}>
+            <div style={reviewItemHeaderStyle}>
+              <div style={{ minWidth: 0 }}>
+                <strong style={reviewItemTitleStyle}>{item.title}{item.isPrimary ? ' · principal' : ''}</strong>
+                <span style={reviewPathStyle}>{item.fullPath || 'Destino incompleto'}</span>
+              </div>
+              <span style={reviewModeStyle}>{formatInjectionMode(item.mode)}</span>
+            </div>
+            <div style={reviewMetaGridStyle}>
+              <ReviewMeta label="Arquivo" value={item.filename || 'Nao informado'} />
+              <ReviewMeta label="Diretorio" value={item.directory || 'Nao informado'} />
+            </div>
+            {item.errors.length > 0 && (
+              <div style={reviewInlineErrorStyle}>
+                {item.errors.join(' · ')}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div style={reviewReferencesStyle}>
+        <div style={sectionLabelStyle}>Referencias adicionadas no Agent</div>
+        {agentReferences.length > 0 ? (
+          <div style={referenceListStyle}>
+            {[...new Set(agentReferences)].map((reference) => (
+              <code key={reference} style={referencePillStyle}>{reference}</code>
+            ))}
+          </div>
+        ) : (
+          <span style={reviewEmptyStyle}>Nenhuma referencia markdown sera adicionada.</span>
+        )}
+      </div>
+
+      {errors.length > 0 && (
+        <div style={reviewBlockingStyle}>
+          Corrija os campos no Passo 3 antes de injetar: {errors.join(' · ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={reviewMetaStyle}>
+      <span style={reviewMetaLabelStyle}>{label}</span>
+      <span style={reviewMetaValueStyle}>{value}</span>
+    </div>
+  );
+}
+
+function formatInjectionMode(mode: ComposeInjectionMode): string {
+  if (mode === 'overwrite') return 'Sobrescrever';
+  if (mode === 'append') return 'Anexar';
+  return 'Criar';
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -732,6 +1339,97 @@ const rightPanelStyle: React.CSSProperties = {
   padding: '16px 0 0',
 };
 
+const inspectorPanelStyle: React.CSSProperties = {
+  width: 260,
+  flexShrink: 0,
+  overflowY: 'auto',
+  padding: '16px 20px 16px 16px',
+};
+
+const inspectorStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 14,
+};
+
+const inspectorEmptyStyle: React.CSSProperties = {
+  color: 'var(--text-muted)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
+};
+
+const inspectorTitleStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
+  color: 'var(--text-primary)',
+  fontWeight: 500,
+};
+
+const inspectorSubtitleStyle: React.CSSProperties = {
+  marginTop: 3,
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  color: 'var(--text-muted)',
+};
+
+const inspectorFieldStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+};
+
+const inspectorLabelStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  color: 'var(--text-muted)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+};
+
+const inspectorInputStyle: React.CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  background: 'var(--bg-overlay)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 4,
+  color: 'var(--text-primary)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  outline: 'none',
+  padding: '7px 8px',
+};
+
+const inspectorCheckStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 9,
+  cursor: 'pointer',
+  color: 'var(--text-secondary)',
+};
+
+const inspectorCheckboxStyle: React.CSSProperties = {
+  marginTop: 2,
+  accentColor: 'var(--accent)',
+  flexShrink: 0,
+};
+
+const inspectorCheckTitleStyle: React.CSSProperties = {
+  display: 'block',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
+  color: 'var(--text-primary)',
+  fontWeight: 500,
+};
+
+const inspectorCheckHintStyle: React.CSSProperties = {
+  display: 'block',
+  marginTop: 2,
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  color: 'var(--text-muted)',
+  lineHeight: 1.35,
+};
+
 const previewLabelStyle: React.CSSProperties = {
   fontFamily: 'var(--font-ui)',
   fontSize: 'var(--text-xs)',
@@ -743,22 +1441,83 @@ const previewLabelStyle: React.CSSProperties = {
   flexShrink: 0,
 };
 
-const previewScrollStyle: React.CSSProperties = {
+const composeScrollStyle: React.CSSProperties = {
   flex: 1,
   overflowY: 'auto',
   paddingLeft: 20,
-  paddingRight: 16,
+  paddingRight: 20,
   paddingBottom: 16,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 14,
 };
 
-const preStyle: React.CSSProperties = {
-  margin: 0,
+const composeSectionStyle: React.CSSProperties = {
+  background: 'var(--bg-surface)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 6,
+  overflow: 'hidden',
+};
+
+const composeSectionHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '9px 12px',
+  borderBottom: '0.5px solid var(--border)',
+  background: 'var(--bg-overlay)',
+};
+
+const composeSectionIconStyle: React.CSSProperties = {
+  fontSize: 17,
+  color: 'var(--text-muted)',
+  flexShrink: 0,
+};
+
+const composeSectionTitleWrapStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  minWidth: 0,
+};
+
+const composeSectionTitleStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
+  color: 'var(--text-primary)',
+  fontWeight: 500,
+};
+
+const composeSectionMetaStyle: React.CSSProperties = {
+  marginTop: 2,
   fontFamily: 'var(--font-mono)',
-  fontSize: 11,
+  fontSize: 10,
+  color: 'var(--text-muted)',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+const composeTextareaStyle: React.CSSProperties = {
+  width: '100%',
+  minHeight: 180,
+  display: 'block',
+  border: 'none',
+  outline: 'none',
+  resize: 'vertical',
+  background: 'transparent',
+  padding: '12px',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 12,
   lineHeight: 1.6,
   color: 'var(--text-primary)',
   whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
+};
+
+const composeEmptyStyle: React.CSSProperties = {
+  padding: '0 20px',
+  color: 'var(--text-muted)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
 };
 
 const footerStyle: React.CSSProperties = {
@@ -777,13 +1536,77 @@ const sectionLabelStyle: React.CSSProperties = {
   letterSpacing: '0.06em',
 };
 
-const checkItemStyle: React.CSSProperties = {
+const libraryCreateStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 6,
+};
+
+const libraryInputStyle: React.CSSProperties = {
+  background: 'var(--bg-overlay)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 4,
+  color: 'var(--text-primary)',
+  fontFamily: 'var(--font-ui)',
+  outline: 'none',
+  width: '100%',
+  minWidth: 0,
+  padding: '6px 8px',
+  fontSize: 'var(--text-xs)',
+};
+
+const libraryCreateBtnStyle: React.CSSProperties = {
+  width: 28,
+  height: 28,
+  borderRadius: 4,
+  border: '0.5px solid var(--border)',
+  background: 'var(--bg-surface)',
+  color: 'var(--text-muted)',
   display: 'flex',
   alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
+  flexShrink: 0,
+};
+
+const helperTextStyle: React.CSSProperties = {
+  marginTop: 6,
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
+  color: 'var(--text-muted)',
+};
+
+const checkItemStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
   gap: 8,
   cursor: 'pointer',
   padding: '3px 0',
 };
+
+const libraryItemTextStyle: React.CSSProperties = {
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+};
+
+const libraryItemNameStyle: React.CSSProperties = {
+  color: 'var(--text-secondary)',
+  fontSize: 'var(--text-sm)',
+  lineHeight: 1.3,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const libraryItemKindStyle: React.CSSProperties = {
+  color: 'var(--text-muted)',
+  fontSize: 10,
+  lineHeight: 1,
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+};
+
 
 const gridStyle: React.CSSProperties = {
   display: 'grid',
@@ -909,16 +1732,6 @@ const dropdownItemStyle: React.CSSProperties = {
   textOverflow: 'ellipsis',
 };
 
-const filenameBtnBase: React.CSSProperties = {
-  padding: '5px 14px',
-  borderRadius: 4,
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  fontSize: 'var(--text-xs)',
-  color: 'var(--text-primary)',
-  transition: 'border-color 100ms ease, background 100ms ease',
-};
-
 const toastStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -930,4 +1743,165 @@ const toastStyle: React.CSSProperties = {
   color: 'var(--text-secondary)',
   fontFamily: 'var(--font-ui)',
   fontSize: 'var(--text-xs)',
+};
+
+const reviewWrapStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+};
+
+const reviewHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+};
+
+const reviewTitleStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
+  color: 'var(--text-primary)',
+  fontWeight: 500,
+};
+
+const reviewSubtitleStyle: React.CSSProperties = {
+  marginTop: 3,
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  color: 'var(--text-muted)',
+};
+
+const reviewErrorBadgeStyle: React.CSSProperties = {
+  padding: '3px 8px',
+  borderRadius: 999,
+  background: 'rgba(239,68,68,0.12)',
+  color: '#ef4444',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+};
+
+const reviewListStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+};
+
+const reviewItemStyle: React.CSSProperties = {
+  border: '0.5px solid var(--border)',
+  borderRadius: 6,
+  background: 'var(--bg-surface)',
+  padding: 12,
+};
+
+const reviewItemHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  justifyContent: 'space-between',
+  gap: 10,
+};
+
+const reviewItemTitleStyle: React.CSSProperties = {
+  display: 'block',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-sm)',
+  color: 'var(--text-primary)',
+  fontWeight: 500,
+};
+
+const reviewPathStyle: React.CSSProperties = {
+  display: 'block',
+  marginTop: 3,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 11,
+  color: 'var(--text-muted)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const reviewModeStyle: React.CSSProperties = {
+  flexShrink: 0,
+  padding: '3px 7px',
+  borderRadius: 999,
+  border: '0.5px solid var(--border)',
+  color: 'var(--text-secondary)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 11,
+};
+
+const reviewMetaGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '1fr 1.4fr',
+  gap: 8,
+  marginTop: 10,
+};
+
+const reviewMetaStyle: React.CSSProperties = {
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 3,
+};
+
+const reviewMetaLabelStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-ui)',
+  fontSize: 10,
+  color: 'var(--text-muted)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+};
+
+const reviewMetaValueStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 11,
+  color: 'var(--text-secondary)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const reviewInlineErrorStyle: React.CSSProperties = {
+  marginTop: 9,
+  color: '#ef4444',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+};
+
+const reviewReferencesStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+};
+
+const referenceListStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 6,
+};
+
+const referencePillStyle: React.CSSProperties = {
+  padding: '3px 7px',
+  borderRadius: 999,
+  background: 'var(--bg-overlay)',
+  border: '0.5px solid var(--border)',
+  color: 'var(--text-secondary)',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 11,
+};
+
+const reviewEmptyStyle: React.CSSProperties = {
+  color: 'var(--text-muted)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+};
+
+const reviewBlockingStyle: React.CSSProperties = {
+  padding: '8px 10px',
+  borderRadius: 4,
+  background: 'rgba(239,68,68,0.08)',
+  color: '#ef4444',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  lineHeight: 1.4,
 };

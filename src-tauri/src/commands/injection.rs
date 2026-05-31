@@ -1,7 +1,8 @@
 use crate::db::DbState;
 use rusqlite::params;
 use serde::Deserialize;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -28,13 +29,54 @@ pub fn inject_agent_file(
     target_path: String,
     content: String,
     filename: String,
+    mode: String,
 ) -> Result<(), String> {
-    let safe_name = Path::new(&filename)
-        .file_name()
-        .ok_or("nome de arquivo inválido")?
-        .to_os_string();
-    let dest = Path::new(&target_path).join(safe_name);
-    fs::write(&dest, content).map_err(|e| e.to_string())
+    let trimmed_name = filename.trim();
+    if trimmed_name.is_empty()
+        || trimmed_name == "."
+        || trimmed_name == ".."
+        || trimmed_name.contains('/')
+        || trimmed_name.contains('\\')
+        || trimmed_name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+    {
+        return Err("nome de arquivo inválido".into());
+    }
+
+    let trimmed_target = target_path.trim();
+    if trimmed_target.is_empty() || trimmed_target.chars().any(|c| c.is_control()) {
+        return Err("diretório destino inválido".into());
+    }
+
+    let target = Path::new(trimmed_target);
+    fs::create_dir_all(target).map_err(|e| e.to_string())?;
+    let dest = target.join(trimmed_name);
+
+    match mode.as_str() {
+        "create" => {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&dest)
+                .map_err(|e| e.to_string())?;
+            file.write_all(content.as_bytes()).map_err(|e| e.to_string())
+        }
+        "overwrite" => fs::write(&dest, content).map_err(|e| e.to_string()),
+        "append" => {
+            let needs_separator = dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&dest)
+                .map_err(|e| e.to_string())?;
+            if needs_separator {
+                file.write_all(b"\n").map_err(|e| e.to_string())?;
+            }
+            file.write_all(content.as_bytes()).map_err(|e| e.to_string())
+        }
+        _ => Err("modo de injeção inválido".into()),
+    }
 }
 
 #[tauri::command]
