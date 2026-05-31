@@ -13,6 +13,7 @@ interface Props {
   onOpenJsonFormatter: () => void;
   onOpenTaskLists: () => void;
   onOpenSettings: () => void;
+  onOpenAgentConfig: () => void;
 }
 
 export function SessionSidebar({
@@ -23,6 +24,7 @@ export function SessionSidebar({
   onOpenJsonFormatter,
   onOpenTaskLists,
   onOpenSettings,
+  onOpenAgentConfig,
 }: Props) {
   const [fileQuery, setFileQuery] = useState('');
   const [sort, setSort] = useState<SortMode>('name');
@@ -68,6 +70,7 @@ export function SessionSidebar({
         }}
       >
         <div style={{ flex: 1 }} />
+        <RailButton icon="smart_toy" label="Agent Config  Ctrl+Shift+G" onClick={onOpenAgentConfig} />
         <RailButton icon="checklist" label="Tarefas" onClick={onOpenTaskLists} />
         <RailButton icon="data_object" label="JSON Formatter  Ctrl+Shift+J" onClick={onOpenJsonFormatter} />
         <div style={{ height: 4 }} />

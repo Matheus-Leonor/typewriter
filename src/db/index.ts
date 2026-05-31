@@ -11,6 +11,15 @@ export interface Session {
   updated_at: number;
 }
 
+export interface InjectionHistoryEntry {
+  id: string;
+  template_name: string;
+  skills: string;
+  docs: string;
+  target_path: string;
+  filename: string;
+}
+
 export interface SessionPatch {
   title?: string;
   content?: string;
@@ -85,5 +94,12 @@ export const db = {
       invoke<string | null>('get_setting', { key }),
     set: (key: string, value: string) =>
       invoke<void>('set_setting', { key, value }),
+  },
+
+  injections: {
+    saveHistory: (entry: InjectionHistoryEntry) =>
+      invoke<void>('save_injection_history', { entry }),
+    getRecentPaths: (limit = 5) =>
+      invoke<string[]>('get_recent_inject_paths', { limit }),
   },
 };

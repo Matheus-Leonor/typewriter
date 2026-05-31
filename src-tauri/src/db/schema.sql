@@ -42,3 +42,18 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_injections (
+  id TEXT PRIMARY KEY,
+  template_name TEXT NOT NULL,
+  skills TEXT NOT NULL,
+  docs TEXT NOT NULL,
+  target_path TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  injected_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS recent_inject_paths (
+  path TEXT PRIMARY KEY,
+  used_at INTEGER NOT NULL
+);

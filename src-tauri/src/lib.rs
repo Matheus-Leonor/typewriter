@@ -44,6 +44,12 @@ pub fn run() {
             commands::fs::delete_entry,
             commands::fs::duplicate_note,
             commands::fs::watch_vault,
+            commands::fs::ensure_agent_workspace,
+            commands::fs::list_vault_directory,
+            commands::fs::read_vault_file,
+            commands::injection::inject_agent_file,
+            commands::injection::save_injection_history,
+            commands::injection::get_recent_inject_paths,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -9,9 +9,11 @@ import { useSession } from './sessions/useSession';
 import { db, Session } from './db';
 import { CursorBlink, CursorStyle } from './editor/Editor';
 import { VaultScreen } from './vault/VaultScreen';
+import { ensureAgentWorkspaceStructure } from './vault/agentWorkspace';
 import { JsonFormatterDialog } from './components/JsonFormatterDialog';
 import { TaskListsDialog } from './components/TaskListsDialog';
 import { SettingsDialog } from './components/SettingsDialog';
+import { AgentConfigDialog } from './components/AgentConfigDialog';
 import { TitleBar, SidebarTab } from './components/TitleBar';
 import './theme/global.css';
 
@@ -35,6 +37,7 @@ function AppInner() {
   const [jsonDialogOpen, setJsonDialogOpen] = useState(false);
   const [taskListsDialogOpen, setTaskListsDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [agentConfigOpen, setAgentConfigOpen] = useState(false);
 
   useEffect(() => {
     async function init() {
@@ -42,6 +45,7 @@ function AppInner() {
       setRecentVaultPath(savedVault);
       if (savedVault) {
         setVaultPath(savedVault);
+        await ensureAgentWorkspaceStructure(savedVault).catch(console.error);
         await loadApp();
       }
       setVaultChecked(true);
@@ -79,6 +83,7 @@ function AppInner() {
   const handleVaultReady = useCallback(async (path: string) => {
     setVaultPath(path);
     setRecentVaultPath(path);
+    await ensureAgentWorkspaceStructure(path).catch(console.error);
 
     const [savedCursorStyle, savedCursorBlink, savedFont] = await Promise.all([
       db.settings.get('cursor_style'),
@@ -118,6 +123,10 @@ function AppInner() {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'J') {
         e.preventDefault();
         setJsonDialogOpen((o) => !o);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'G') {
+        e.preventDefault();
+        setAgentConfigOpen((o) => !o);
       }
     };
     window.addEventListener('keydown', handler);
@@ -188,6 +197,7 @@ function AppInner() {
           onOpenJsonFormatter={() => setJsonDialogOpen(true)}
           onOpenTaskLists={() => setTaskListsDialogOpen(true)}
           onOpenSettings={() => setSettingsDialogOpen(true)}
+          onOpenAgentConfig={() => setAgentConfigOpen(true)}
         />
 
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -229,6 +239,13 @@ function AppInner() {
           onCursorStyleChange={setCursorStyle}
           onCursorBlinkChange={setCursorBlink}
           onClose={() => setSettingsDialogOpen(false)}
+        />
+      )}
+
+      {agentConfigOpen && vaultPath && (
+        <AgentConfigDialog
+          vaultPath={vaultPath}
+          onClose={() => setAgentConfigOpen(false)}
         />
       )}
     </AppShell>
