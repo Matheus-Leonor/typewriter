@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
+import { EditorSelection, EditorState } from '@codemirror/state';
 import { defaultKeymap, historyKeymap, history } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
 import { GFM } from '@lezer/markdown';
@@ -13,7 +13,7 @@ export type CursorBlink = 'blink' | 'breath' | 'none';
 
 const editorTheme = EditorView.theme({
   '&': { height: '100%', background: 'transparent', fontSize: 'var(--text-base)' },
-  '.cm-scroller': { overflow: 'auto', height: '100%', fontFamily: 'var(--font-mono)' },
+  '.cm-scroller': { overflow: 'auto', height: '100%', fontFamily: 'var(--font-editor)' },
   '.cm-content': {
     padding: '48px 64px',
     maxWidth: '740px',
@@ -47,11 +47,181 @@ interface EditorProps {
   kineticEnabled?: boolean;
   cursorStyle: CursorStyle;
   cursorBlink: CursorBlink;
+  onOpenJsonFormatter: () => void;
 }
 
-export function Editor({ session, onUpdate, kineticEnabled = true, cursorStyle, cursorBlink }: EditorProps) {
+type ContextMenuState = {
+  x: number;
+  y: number;
+};
+
+type ContextMenuItem =
+  | { type: 'separator' }
+  | { type: 'item'; label: string; action: () => void | Promise<void> };
+
+export function Editor({
+  session,
+  onUpdate,
+  kineticEnabled = true,
+  cursorStyle,
+  cursorBlink,
+  onOpenJsonFormatter,
+}: EditorProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const getSelectedText = useCallback((view: EditorView) => {
+    return view.state.selection.ranges
+      .map((range) => view.state.sliceDoc(range.from, range.to))
+      .join('\n');
+  }, []);
+
+  const insertText = useCallback((text: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch(
+      view.state.changeByRange((range) => ({
+        changes: { from: range.from, to: range.to, insert: text },
+        range: EditorSelection.cursor(range.from + text.length),
+      })),
+    );
+    view.focus();
+  }, []);
+
+  const wrapSelection = useCallback((before: string, after = before) => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch(
+      view.state.changeByRange((range) => {
+        const selected = view.state.sliceDoc(range.from, range.to);
+        const insert = `${before}${selected}${after}`;
+        const anchor = range.empty ? range.from + before.length : range.from;
+        const head = range.empty ? anchor : range.to + before.length;
+
+        return {
+          changes: { from: range.from, to: range.to, insert },
+          range: EditorSelection.range(anchor, head),
+        };
+      }),
+    );
+    view.focus();
+  }, []);
+
+  const deleteSelection = useCallback(() => {
+    const view = viewRef.current;
+    if (!view || view.state.selection.main.empty) return;
+
+    view.dispatch(
+      view.state.changeByRange((range) => ({
+        changes: { from: range.from, to: range.to, insert: '' },
+        range: EditorSelection.cursor(range.from),
+      })),
+    );
+    view.focus();
+  }, []);
+
+  const copySelection = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    const selected = getSelectedText(view);
+    const text = selected || view.state.doc.toString();
+    await navigator.clipboard.writeText(text);
+    view.focus();
+  }, [getSelectedText]);
+
+  const cutSelection = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    const selected = getSelectedText(view);
+    if (!selected) return;
+
+    await navigator.clipboard.writeText(selected);
+    deleteSelection();
+  }, [deleteSelection, getSelectedText]);
+
+  const pasteClipboard = useCallback(async () => {
+    const text = await navigator.clipboard.readText();
+    if (text) insertText(text);
+  }, [insertText]);
+
+  const copyPlainText = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    const selected = getSelectedText(view);
+    const markdownText = selected || view.state.doc.toString();
+    const plainText = markdownText
+      .replace(/```[\s\S]*?```/g, (match) => match.replace(/```[^\n]*\n?|```/g, ''))
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[*_~#>]+/g, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/^\s*\d+\.\s+/gm, '');
+
+    await navigator.clipboard.writeText(plainText);
+    view.focus();
+  }, [getSelectedText]);
+
+  const insertLink = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch(
+      view.state.changeByRange((range) => {
+        const selected = view.state.sliceDoc(range.from, range.to) || 'texto';
+        const insert = `[${selected}](url)`;
+        const urlStart = range.from + selected.length + 3;
+
+        return {
+          changes: { from: range.from, to: range.to, insert },
+          range: EditorSelection.range(urlStart, urlStart + 3),
+        };
+      }),
+    );
+    view.focus();
+  }, []);
+
+  const insertTable = useCallback(() => {
+    insertText('| Coluna 1 | Coluna 2 |\n| --- | --- |\n| Valor | Valor |');
+  }, [insertText]);
+
+  const menuItems = useMemo<ContextMenuItem[]>(
+    () => [
+      { type: 'item', label: 'Cortar', action: cutSelection },
+      { type: 'item', label: 'Copiar', action: copySelection },
+      { type: 'item', label: 'Colar', action: pasteClipboard },
+      { type: 'separator' },
+      { type: 'item', label: 'Formatar como bold', action: () => wrapSelection('**') },
+      { type: 'item', label: 'Formatar como italic', action: () => wrapSelection('*') },
+      { type: 'item', label: 'Formatar como código', action: () => wrapSelection('`') },
+      { type: 'separator' },
+      { type: 'item', label: 'Copiar como Markdown', action: copySelection },
+      { type: 'item', label: 'Copiar como texto puro', action: copyPlainText },
+      { type: 'separator' },
+      { type: 'item', label: 'Inserir link', action: insertLink },
+      { type: 'item', label: 'Inserir tabela', action: insertTable },
+      { type: 'separator' },
+      { type: 'item', label: 'Formatar JSON', action: onOpenJsonFormatter },
+    ],
+    [
+      copyPlainText,
+      copySelection,
+      cutSelection,
+      insertLink,
+      insertTable,
+      onOpenJsonFormatter,
+      pasteClipboard,
+      wrapSelection,
+    ],
+  );
 
   // Apply cursor classes to view.dom (stable across re-renders — CM6 root element)
   useEffect(() => {
@@ -111,11 +281,88 @@ export function Editor({ session, onUpdate, kineticEnabled = true, cursorStyle, 
     }
   }, [session.content]);
 
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (menuRef.current?.contains(event.target as Node)) return;
+      closeContextMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeContextMenu();
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeContextMenu, contextMenu]);
+
+  const handleContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    event.preventDefault();
+
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos !== null) {
+      const selected = view.state.selection.ranges.some((range) => pos >= range.from && pos <= range.to);
+      if (!selected) {
+        view.dispatch({ selection: EditorSelection.cursor(pos) });
+      }
+    }
+
+    setContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 232)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 376)),
+    });
+  }, []);
+
+  const runMenuAction = useCallback(
+    async (action: () => void | Promise<void>) => {
+      closeContextMenu();
+      try {
+        await action();
+      } catch (error) {
+        console.error('Context menu action failed', error);
+      }
+    },
+    [closeContextMenu],
+  );
+
   return (
     <div
-      ref={shellRef}
       className="ds-editor"
       style={{ flex: 1, overflow: 'hidden', position: 'relative' }}
-    />
+      onContextMenu={handleContextMenu}
+    >
+      <div ref={shellRef} style={{ height: '100%' }} />
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          className="ds-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
+        >
+          {menuItems.map((item, index) =>
+            item.type === 'separator' ? (
+              <div key={`separator-${index}`} className="ds-context-menu__separator" role="separator" />
+            ) : (
+              <button
+                key={item.label}
+                className="ds-context-menu__item"
+                type="button"
+                role="menuitem"
+                onClick={() => void runMenuAction(item.action)}
+              >
+                {item.label}
+              </button>
+            ),
+          )}
+        </div>
+      )}
+    </div>
   );
 }

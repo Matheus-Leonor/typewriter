@@ -21,12 +21,15 @@ interface ContextMenuState {
 interface Props {
   vaultPath: string;
   onOpenFile: (path: string, content: string, name: string) => void;
+  externalSort?: SortMode;
 }
 
-export function FileExplorer({ vaultPath, onOpenFile }: Props) {
+export function FileExplorer({ vaultPath, onOpenFile, externalSort }: Props) {
   const [childrenMap, setChildrenMap] = useState<Map<string, FsEntry[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [sort, setSort] = useState<SortMode>('name');
+  const [internalSort, setInternalSort] = useState<SortMode>('name');
+  const sort = externalSort ?? internalSort;
+  const setSort = externalSort !== undefined ? () => {} : setInternalSort;
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -189,50 +192,52 @@ export function FileExplorer({ vaultPath, onOpenFile }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-      {/* Toolbar */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 4,
-          padding: '6px var(--space-3)',
-          borderBottom: '0.5px solid var(--border)',
-          flexShrink: 0,
-        }}
-      >
-        <ToolBtn
-          title="Nova nota"
-          onClick={() => { setCreating({ dirPath: vaultPath, type: 'note' }); setNewItemName(''); }}
+      {/* Toolbar — only shown when not controlled by parent panel header */}
+      {externalSort === undefined && (
+        <div
+          style={{
+            display: 'flex',
+            gap: 4,
+            padding: '6px var(--space-3)',
+            borderBottom: '0.5px solid var(--border)',
+            flexShrink: 0,
+          }}
         >
-          + Nota
-        </ToolBtn>
-        <ToolBtn
-          title="Nova pasta"
-          onClick={() => { setCreating({ dirPath: vaultPath, type: 'folder' }); setNewItemName(''); }}
-        >
-          + Pasta
-        </ToolBtn>
-        <div style={{ position: 'relative', marginLeft: 'auto' }}>
-          <ToolBtn title="Ordenar" onClick={(e) => { e.stopPropagation(); setShowSortMenu((v) => !v); }}>
-            Ordenar ↕
+          <ToolBtn
+            title="Nova nota"
+            onClick={() => { setCreating({ dirPath: vaultPath, type: 'note' }); setNewItemName(''); }}
+          >
+            + Nota
           </ToolBtn>
-          {showSortMenu && (
-            <div
-              onMouseDown={(e) => e.stopPropagation()}
-              style={dropdownStyle}
-            >
-              {(['name', 'modified', 'created'] as SortMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => { setSort(m); setShowSortMenu(false); }}
-                  style={{ ...dropdownItemStyle, color: sort === m ? 'var(--accent)' : 'var(--text-secondary)' }}
-                >
-                  {m === 'name' ? 'Nome A-Z' : m === 'modified' ? 'Modificação' : 'Criação'}
-                </button>
-              ))}
-            </div>
-          )}
+          <ToolBtn
+            title="Nova pasta"
+            onClick={() => { setCreating({ dirPath: vaultPath, type: 'folder' }); setNewItemName(''); }}
+          >
+            + Pasta
+          </ToolBtn>
+          <div style={{ position: 'relative', marginLeft: 'auto' }}>
+            <ToolBtn title="Ordenar" onClick={(e) => { e.stopPropagation(); setShowSortMenu((v) => !v); }}>
+              Ordenar ↕
+            </ToolBtn>
+            {showSortMenu && (
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                style={dropdownStyle}
+              >
+                {(['name', 'modified', 'created'] as SortMode[]).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => { setSort(m); setShowSortMenu(false); }}
+                    style={{ ...dropdownItemStyle, color: sort === m ? 'var(--accent)' : 'var(--text-secondary)' }}
+                  >
+                    {m === 'name' ? 'Nome A-Z' : m === 'modified' ? 'Modificação' : 'Criação'}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Tree */}
       <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '4px 0' }}>
@@ -376,12 +381,12 @@ function EntryTree({
           userSelect: 'none',
         }}
       >
-        <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0, width: 10 }}>
+        <span style={{ fontSize: 17, color: 'var(--text-muted)', flexShrink: 0, width: 17, lineHeight: 1 }}>
           {entry.is_dir ? (isExpanded ? '▾' : '▸') : '·'}
         </span>
         <span
           style={{
-            fontSize: 'var(--text-xs)',
+            fontSize: 'var(--text-sm)',
             fontFamily: 'var(--font-ui)',
             color: 'var(--text-secondary)',
             whiteSpace: 'nowrap',
@@ -491,7 +496,6 @@ function ContextMenuPopup({
         borderRadius: 6,
         padding: 4,
         minWidth: 140,
-        boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
       }}
     >
       <CtxItem onClick={() => { onRename(entry); onClose(); }}>Renomear</CtxItem>
@@ -587,7 +591,6 @@ const dropdownStyle: React.CSSProperties = {
   borderRadius: 6,
   padding: 4,
   minWidth: 120,
-  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
 };
 
 const dropdownItemStyle: React.CSSProperties = {

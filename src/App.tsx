@@ -9,6 +9,10 @@ import { useSession } from './sessions/useSession';
 import { db, Session } from './db';
 import { CursorBlink, CursorStyle } from './editor/Editor';
 import { VaultScreen } from './vault/VaultScreen';
+import { JsonFormatterDialog } from './components/JsonFormatterDialog';
+import { TaskListsDialog } from './components/TaskListsDialog';
+import { SettingsDialog } from './components/SettingsDialog';
+import { TitleBar, SidebarTab } from './components/TitleBar';
 import './theme/global.css';
 
 interface ActiveFile {
@@ -18,9 +22,9 @@ interface ActiveFile {
 }
 
 function AppInner() {
-  const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('files');
   const [cursorStyle, setCursorStyle] = useState<CursorStyle>('line');
   const [cursorBlink, setCursorBlink] = useState<CursorBlink>('blink');
   const [ready, setReady] = useState(false);
@@ -28,8 +32,10 @@ function AppInner() {
   const [recentVaultPath, setRecentVaultPath] = useState<string | null>(null);
   const [vaultChecked, setVaultChecked] = useState(false);
   const [activeFile, setActiveFile] = useState<ActiveFile | null>(null);
+  const [jsonDialogOpen, setJsonDialogOpen] = useState(false);
+  const [taskListsDialogOpen, setTaskListsDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
 
-  // Check vault first, then load sessions
   useEffect(() => {
     async function init() {
       const savedVault = await db.settings.get('active_vault_path');
@@ -42,9 +48,10 @@ function AppInner() {
     }
 
     async function loadApp() {
-      const [savedCursorStyle, savedCursorBlink] = await Promise.all([
+      const [savedCursorStyle, savedCursorBlink, savedFont] = await Promise.all([
         db.settings.get('cursor_style'),
         db.settings.get('cursor_blink'),
+        db.settings.get('editor_font'),
       ]);
 
       if (savedCursorStyle === 'line' || savedCursorStyle === 'block' || savedCursorStyle === 'underscore') {
@@ -53,13 +60,15 @@ function AppInner() {
       if (savedCursorBlink === 'blink' || savedCursorBlink === 'breath' || savedCursorBlink === 'none') {
         setCursorBlink(savedCursorBlink);
       }
+      if (savedFont === 'ibm-plex-sans') {
+        document.documentElement.style.setProperty('--font-editor', '"IBM Plex Sans", sans-serif');
+      }
 
       let list = await sessionStore.list();
       if (list.length === 0) {
         const s = await sessionStore.create();
         list = [s];
       }
-      setSessions(list);
       setCurrentSession(list[0]);
       setReady(true);
     }
@@ -71,9 +80,10 @@ function AppInner() {
     setVaultPath(path);
     setRecentVaultPath(path);
 
-    const [savedCursorStyle, savedCursorBlink] = await Promise.all([
+    const [savedCursorStyle, savedCursorBlink, savedFont] = await Promise.all([
       db.settings.get('cursor_style'),
       db.settings.get('cursor_blink'),
+      db.settings.get('editor_font'),
     ]);
     if (savedCursorStyle === 'line' || savedCursorStyle === 'block' || savedCursorStyle === 'underscore') {
       setCursorStyle(savedCursorStyle as CursorStyle);
@@ -81,13 +91,15 @@ function AppInner() {
     if (savedCursorBlink === 'blink' || savedCursorBlink === 'breath' || savedCursorBlink === 'none') {
       setCursorBlink(savedCursorBlink as CursorBlink);
     }
+    if (savedFont === 'ibm-plex-sans') {
+      document.documentElement.style.setProperty('--font-editor', '"IBM Plex Sans", sans-serif');
+    }
 
     let list = await sessionStore.list();
     if (list.length === 0) {
       const s = await sessionStore.create();
       list = [s];
     }
-    setSessions(list);
     setCurrentSession(list[0]);
     setReady(true);
   }, []);
@@ -96,126 +108,86 @@ function AppInner() {
     setActiveFile({ path, content, name });
   }, []);
 
-  const handleSwitchVault = useCallback(async () => {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const path = await invoke<string | null>('pick_folder');
-    if (!path) return;
-    await db.settings.set('active_vault_path', path);
-    setVaultPath(path);
-    setRecentVaultPath(path);
-  }, []);
-
-  // Global keyboard shortcuts
+  // Ctrl+B toggles sidebar; Ctrl+Shift+J opens JSON formatter
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'b') {
         e.preventDefault();
         setSidebarOpen((o) => !o);
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'J') {
         e.preventDefault();
-        handleNewSession();
+        setJsonDialogOpen((o) => !o);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   });
 
-  const handleNewSession = useCallback(async () => {
-    const s = await sessionStore.create();
-    setSessions((prev) => [s, ...prev]);
-    setCurrentSession(s);
-  }, []);
-
-  const handleSelectSession = useCallback((s: Session) => {
-    setCurrentSession(s);
-  }, []);
-
-  const handleDeleteSession = useCallback(
-    async (id: string) => {
-      await sessionStore.delete(id);
-      setSessions((prev) => {
-        const next = prev.filter((s) => s.id !== id);
-        if (currentSession?.id === id) {
-          setCurrentSession(next[0] ?? null);
-        }
-        return next;
-      });
-    },
-    [currentSession],
-  );
-
   const handleSessionChange = useCallback((updated: Session) => {
     setCurrentSession(updated);
-    setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+  }, []);
+
+  const handleOpenFiles = useCallback(() => {
+    setSidebarTab('files');
+    setSidebarOpen((open) => {
+      if (!open) return true;
+      return true;
+    });
+  }, []);
+
+  const handleOpenSearch = useCallback(() => {
+    setSidebarTab('search');
+    setSidebarOpen(true);
+  }, []);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen((o) => !o);
   }, []);
 
   if (!vaultChecked) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          height: '100vh',
-          background: 'var(--bg-primary)',
-        }}
-      >
-        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
-          DevScribe
-        </span>
-      </div>
+      <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
+            DevScribe
+          </span>
+        </div>
+      </AppShell>
     );
   }
 
   if (!vaultPath) {
-    return <VaultScreen recentPath={recentVaultPath} onVaultReady={handleVaultReady} />;
+    return (
+      <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
+        <VaultScreen recentPath={recentVaultPath} onVaultReady={handleVaultReady} />
+      </AppShell>
+    );
   }
 
   if (!ready) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          height: '100vh',
-          background: 'var(--bg-primary)',
-        }}
-      >
-        <span
-          style={{
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-muted)',
-            fontSize: 'var(--text-sm)',
-          }}
-        >
-          DevScribe
-        </span>
-      </div>
+      <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
+            DevScribe
+          </span>
+        </div>
+      </AppShell>
     );
   }
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100vh',
-        background: 'var(--bg-primary)',
-        overflow: 'hidden',
-      }}
-    >
+    <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <SessionSidebar
-          sessions={sessions}
-          currentId={currentSession?.id}
           open={sidebarOpen}
-          onSelect={(s) => { setActiveFile(null); handleSelectSession(s); }}
-          onNew={() => { setActiveFile(null); handleNewSession(); }}
-          onDelete={handleDeleteSession}
-          vaultPath={vaultPath!}
-          onOpenFile={handleOpenFile}
+          tab={sidebarTab}
+          vaultPath={vaultPath}
+          onOpenFile={(path, content, name) => { setActiveFile(null); setTimeout(() => handleOpenFile(path, content, name), 0); }}
+          onOpenJsonFormatter={() => setJsonDialogOpen(true)}
+          onOpenTaskLists={() => setTaskListsDialogOpen(true)}
+          onOpenSettings={() => setSettingsDialogOpen(true)}
         />
 
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -224,6 +196,7 @@ function AppInner() {
               file={activeFile}
               cursorStyle={cursorStyle}
               cursorBlink={cursorBlink}
+              onOpenJsonFormatter={() => setJsonDialogOpen(true)}
             />
           ) : currentSession ? (
             <EditorPane
@@ -231,49 +204,76 @@ function AppInner() {
               onSessionChange={handleSessionChange}
               cursorStyle={cursorStyle}
               cursorBlink={cursorBlink}
+              onOpenJsonFormatter={() => setJsonDialogOpen(true)}
             />
           ) : (
-            <div
-              style={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--text-muted)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 'var(--text-sm)',
-              }}
-            >
-              Ctrl+N para nova sessão
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 'var(--text-sm)' }}>
+              Abra um arquivo pelo explorador
             </div>
           )}
         </main>
       </div>
 
-      <StatusBar
-        session={activeFile ? null : currentSession}
+      <StatusBar session={activeFile ? null : currentSession} />
+
+      {jsonDialogOpen && <JsonFormatterDialog onClose={() => setJsonDialogOpen(false)} />}
+
+      {taskListsDialogOpen && (
+        <TaskListsDialog onClose={() => setTaskListsDialogOpen(false)} vaultPath={vaultPath ?? undefined} />
+      )}
+
+      {settingsDialogOpen && (
+        <SettingsDialog
+          cursorStyle={cursorStyle}
+          cursorBlink={cursorBlink}
+          onCursorStyleChange={setCursorStyle}
+          onCursorBlinkChange={setCursorBlink}
+          onClose={() => setSettingsDialogOpen(false)}
+        />
+      )}
+    </AppShell>
+  );
+}
+
+function AppShell({
+  children,
+  sidebarOpen,
+  sidebarTab,
+  onToggleSidebar,
+  onOpenFiles,
+  onOpenSearch,
+}: {
+  children: React.ReactNode;
+  sidebarOpen: boolean;
+  sidebarTab: SidebarTab;
+  onToggleSidebar: () => void;
+  onOpenFiles: () => void;
+  onOpenSearch: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <TitleBar
         sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen((o) => !o)}
-        cursorStyle={cursorStyle}
-        cursorBlink={cursorBlink}
-        onCursorStyleChange={setCursorStyle}
-        onCursorBlinkChange={setCursorBlink}
-        onSwitchVault={handleSwitchVault}
+        sidebarTab={sidebarTab}
+        onToggleSidebar={onToggleSidebar}
+        onOpenFiles={onOpenFiles}
+        onOpenSearch={onOpenSearch}
       />
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {children}
+      </div>
     </div>
   );
 }
 
 function EditorPane({
-  session,
-  onSessionChange,
-  cursorStyle,
-  cursorBlink,
+  session, onSessionChange, cursorStyle, cursorBlink, onOpenJsonFormatter,
 }: {
   session: Session;
   onSessionChange: (s: Session) => void;
   cursorStyle: CursorStyle;
   cursorBlink: CursorBlink;
+  onOpenJsonFormatter: () => void;
 }) {
   const { updateContent } = useSession(session, onSessionChange);
   const isKineticMode = session.content_type === 'free' || session.content_type === 'markdown';
@@ -285,18 +285,18 @@ function EditorPane({
       kineticEnabled={isKineticMode}
       cursorStyle={cursorStyle}
       cursorBlink={cursorBlink}
+      onOpenJsonFormatter={onOpenJsonFormatter}
     />
   );
 }
 
 function FileEditorPane({
-  file,
-  cursorStyle,
-  cursorBlink,
+  file, cursorStyle, cursorBlink, onOpenJsonFormatter,
 }: {
   file: ActiveFile;
   cursorStyle: CursorStyle;
   cursorBlink: CursorBlink;
+  onOpenJsonFormatter: () => void;
 }) {
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -325,6 +325,7 @@ function FileEditorPane({
       kineticEnabled={true}
       cursorStyle={cursorStyle}
       cursorBlink={cursorBlink}
+      onOpenJsonFormatter={onOpenJsonFormatter}
     />
   );
 }
