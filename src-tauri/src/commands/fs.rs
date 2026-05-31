@@ -113,7 +113,7 @@ pub fn duplicate_note(path: String) -> Result<String, String> {
 pub fn ensure_agent_workspace(vault_path: String) -> Result<(), String> {
     let root = Path::new(&vault_path);
 
-    let dirs = ["agents/templates", "agents/gerados", "skills", "docs"];
+    let dirs = ["agents/templates", "agents/gerados", "skills", "docs", "Notas"];
     for dir in &dirs {
         fs::create_dir_all(root.join(dir)).map_err(|e| e.to_string())?;
     }
@@ -138,22 +138,6 @@ pub fn ensure_agent_workspace(vault_path: String) -> Result<(), String> {
         (
             "agents/templates/code-review.md",
             "---\ntipo: template\ncontexto: code-review\n---\n\n# CLAUDE.md — Code Review\n\nVocê está revisando código para qualidade, segurança e boas práticas.\n\n## Escopo\n[Quais arquivos ou funcionalidades revisar]\n\n## Critérios\n- Correctness: o código faz o que deveria?\n- Segurança: há vulnerabilidades?\n- Legibilidade: o código é claro e idiomático?\n- Performance: há gargalos evidentes?\n\n## Nível de Detalhe\n[Superficial / Detalhado / Completo]\n",
-        ),
-        (
-            "skills/kotlin-android.md",
-            "---\ntipo: skill\nnome: kotlin-android\n---\n\n# Skill — Kotlin Android\n\nDesenvolvimento Android com Kotlin moderno.\n\n## Stack\n- Kotlin + Coroutines\n- Jetpack Compose\n- ViewModel + StateFlow\n- Room para persistência local\n\n## Padrões\n- MVVM como arquitetura padrão\n- Hilt para injeção de dependência\n- Flows para streams de dados reativos\n- Composables stateless quando possível\n\n## Regras\n- Nunca usar AsyncTask (depreciado)\n- Preferir StateFlow sobre LiveData em código novo\n- Testes com Turbine para flows\n",
-        ),
-        (
-            "skills/tauri-rust.md",
-            "---\ntipo: skill\nnome: tauri-rust\n---\n\n# Skill — Tauri + Rust\n\nDesenvolvimento desktop com Tauri v2 e Rust no backend.\n\n## Estrutura\n- Comandos Tauri em `src-tauri/src/commands/`\n- Estado compartilhado via `tauri::State`\n- Erros retornados como `Result<T, String>`\n\n## Regras\n- Nenhum componente chama `invoke()` diretamente — só via camada de abstração em `src/`\n- Operações de filesystem via `std::fs` no Rust\n- Comandos async para operações de I/O bloqueantes\n- Não expor paths internos do sistema na API\n",
-        ),
-        (
-            "skills/frontend-design.md",
-            "---\ntipo: skill\nnome: frontend-design\n---\n\n# Skill — Frontend Design System\n\nConstrução de interfaces com CSS Variables e design tokens.\n\n## Padrões\n- Tokens centralizados — cores, fontes e tamanhos em um único arquivo\n- CSS Variables para todos os valores visuais\n- Nenhum valor hardcoded em inline styles\n- Sem bibliotecas de UI externas (MUI, Chakra, Radix, etc.)\n\n## Nomenclatura\n- `--bg-primary`, `--bg-surface` para backgrounds\n- `--text-primary`, `--text-muted` para textos\n- `--accent` para cor de destaque\n- `--space-*` para espaçamentos\n- `--text-sm`, `--text-base` para tamanhos de fonte\n",
-        ),
-        (
-            "skills/spring-boot.md",
-            "---\ntipo: skill\nnome: spring-boot\n---\n\n# Skill — Spring Boot\n\nAPIs REST com Spring Boot 3+ e Java/Kotlin.\n\n## Estrutura\n- Controller → Service → Repository\n- DTOs para entrada e saída de dados\n- Validação com Bean Validation (`@Valid`)\n- Exceções tratadas via `@ControllerAdvice`\n\n## Regras\n- Nunca expor entidades JPA diretamente na API\n- Transações no nível de serviço (`@Transactional`)\n- Testes de integração com `@SpringBootTest`\n- Migrations via Flyway ou Liquibase\n",
         ),
         (
             "docs/identidade-visual.md",

@@ -20,6 +20,15 @@ export interface InjectionHistoryEntry {
   filename: string;
 }
 
+export interface ComposeDraftRecord {
+  id: string;
+  template_id: string;
+  template_slug: string;
+  primary_section_id: string;
+  sections: string;
+  updated_at: number;
+}
+
 export interface SessionPatch {
   title?: string;
   content?: string;

@@ -24,7 +24,7 @@ O resultado é inconsistência, retrabalho e tempo gasto em configuração ao in
 ## Fluxo principal
 
 ```
-CHOOSE → COMPOSE → INJECT
+CHOOSE → ARTIFACTS → COMPOSE → INJECT
 ```
 
 ### 1. Choose — escolha o contexto
@@ -42,7 +42,19 @@ Selecione o tipo de trabalho que o agente vai realizar:
 
 Cada tipo carrega um template base com instruções otimizadas para aquela situação.
 
-### 2. Compose — monte as peças
+### 2. Artifacts — escolha o que criar
+
+Selecione um ou mais artefatos que o TypeWriter deve criar para o contexto escolhido:
+
+- **Agent**
+- **Doc**
+- **Prompt**
+- **Skill**
+- **Markdown**
+
+O fluxo só avança depois de pelo menos uma opção marcada.
+
+### 3. Compose — monte as peças
 
 Selecione as skills e docs do seu vault que devem ser injetadas no arquivo:
 
@@ -51,7 +63,7 @@ Selecione as skills e docs do seu vault que devem ser injetadas no arquivo:
 
 O preview ao lado mostra o conteúdo real do arquivo que será gerado, atualizado em tempo real conforme você seleciona.
 
-### 3. Inject — defina o destino
+### 4. Inject — defina o destino
 
 Escolha o diretório do projeto (via input ou file picker nativo) e o nome do arquivo (`CLAUDE.md`, `AGENTS.md`, ou custom). O TypeWriter escreve o arquivo diretamente no filesystem.
 
@@ -101,7 +113,7 @@ O arquivo final é a concatenação de:
 **Exemplo de header gerado:**
 ```markdown
 <!-- gerado pelo TypeWriter em 2026-05-31 17:38 -->
-<!-- template: bug-fix | skills: kotlin-android, tauri-rust -->
+<!-- template: bug-fix | artefatos: Agent, Prompt | skills: kotlin-android, tauri-rust -->
 ```
 
 ---
@@ -162,6 +174,7 @@ Qualquer arquivo em `/vault/skills/` ou `/vault/docs/` é automaticamente detect
 **Iniciando um projeto novo com Tauri + Kotlin:**
 ```
 Choose  → MVP / Do zero
+Artifacts → Agent + Markdown
 Compose → skills: tauri-rust + kotlin-android
           docs: identidade-visual
 Inject  → /c/projetos/novo-app/CLAUDE.md
@@ -170,6 +183,7 @@ Inject  → /c/projetos/novo-app/CLAUDE.md
 **Investigando um bug num projeto existente:**
 ```
 Choose  → Bug fix
+Artifacts → Prompt
 Compose → skills: kotlin-android
           docs: codegraph-instructions
 Inject  → /c/projetos/ipiranga-online/CLAUDE.md
@@ -178,6 +192,7 @@ Inject  → /c/projetos/ipiranga-online/CLAUDE.md
 **Revisando arquitetura antes de uma feature grande:**
 ```
 Choose  → Arquitetura
+Artifacts → Doc + Agent
 Compose → skills: spring-boot + tauri-rust
 Inject  → /c/projetos/devscribe/AGENTS.md
 ```
