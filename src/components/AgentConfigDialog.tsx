@@ -528,10 +528,10 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
   const composeSectionsCount = compose?.sections.length ?? selectedArtifacts.size;
 
   const stepHint =
-    step === 1 ? 'Passo 1 — Escolha o contexto'
-    : step === 2 ? 'Passo 2 — O que você quer criar?'
-    : step === 3 ? 'Passo 3 — Compor'
-    : 'Passo 4 — Revisar e injetar';
+    step === 1 ? 'Passo 1: Contexto'
+    : step === 2 ? 'Passo 2: Artefatos'
+    : step === 3 ? 'Passo 3: Compose'
+    : 'Passo 4: Injetar';
 
   return (
     <>
@@ -563,7 +563,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         {/* Step 1 body */}
         {step === 1 && (
           <div style={bodyStyle}>
-            <div style={sectionLabelStyle}>Tipo de contexto</div>
+            <div style={sectionLabelStyle}>Contexto</div>
 
             <div style={gridStyle}>
               {BUILTIN_TYPES.map((type) => (
@@ -599,7 +599,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                 <span className="material-symbols-outlined" style={{ fontSize: 20, color: 'var(--text-muted)' }}>
                   add_circle
                 </span>
-                <span style={{ ...cardNameStyle, color: 'var(--text-muted)' }}>Criar novo tipo</span>
+                <span style={{ ...cardNameStyle, color: 'var(--text-muted)' }}>Novo contexto</span>
               </button>
             </div>
 
@@ -608,14 +608,14 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                 <input
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Nome do template (ex: minha-feature)"
+                  placeholder="Nome do contexto"
                   autoFocus
                   style={inputStyle}
                 />
                 <textarea
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
-                  placeholder="Conteúdo do template em Markdown…"
+                  placeholder="Template em Markdown..."
                   rows={6}
                   style={textareaStyle}
                 />
@@ -625,7 +625,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                     disabled={saving || !canSave}
                     style={{ ...actionBtnStyle, opacity: canSave ? 1 : 0.35, cursor: canSave ? 'pointer' : 'default' }}
                   >
-                    {saving ? 'Salvando…' : 'Salvar template'}
+                    {saving ? 'Salvando...' : 'Salvar'}
                   </button>
                   <button
                     onClick={() => { setSelected(null); setNewName(''); setNewContent(''); }}
@@ -643,8 +643,8 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         {step === 2 && (
           <div style={bodyStyle}>
             <div>
-              <div style={sectionLabelStyle}>O que você quer criar?</div>
-              <p style={helperTextStyle}>Selecione um ou mais artefatos para este contexto.</p>
+              <div style={sectionLabelStyle}>Artefatos</div>
+              <p style={helperTextStyle}>Selecione o que será criado.</p>
             </div>
 
             <div style={gridStyle}>
@@ -683,7 +683,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
             {/* Right panel — compose editor */}
             <div style={rightPanelStyle}>
               <div style={previewLabelStyle}>
-                Compose · {composeSectionsCount} seção{composeSectionsCount === 1 ? '' : 'es'} editável
+                Compose · {composeSectionsCount} seção{composeSectionsCount === 1 ? '' : 'es'}
               </div>
               <ComposeEditor
                 compose={compose}
@@ -707,7 +707,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         {/* Step 4 body */}
         {step === 4 && (
           <div style={bodyStyle}>
-            <div style={sectionLabelStyle}>Diretório base</div>
+            <div style={sectionLabelStyle}>Destino</div>
 
             <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -716,7 +716,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                   onChange={(e) => setTargetPath(e.target.value)}
                   onFocus={() => recentPaths.length > 0 && setShowPathDropdown(true)}
                   onBlur={() => setTimeout(() => setShowPathDropdown(false), 150)}
-                  placeholder="Caminho do diretório (ex: C:\projetos\meu-app)"
+                  placeholder="Caminho do projeto"
                   style={{ ...inputStyle, flex: 1 }}
                 />
                 <button onClick={handlePickFolder} style={folderBtnStyle} title="Selecionar pasta">
@@ -764,12 +764,12 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                 cursor: canProceed ? 'pointer' : 'default',
               }}
             >
-              {loadingStep2 ? 'Carregando…' : 'Próximo →'}
+              {loadingStep2 ? 'Carregando...' : 'Avançar'}
             </button>
           )}
           {step === 2 && (
             <>
-              <button onClick={goBack} style={ghostBtnStyle}>← Voltar</button>
+              <button onClick={goBack} style={ghostBtnStyle}>Voltar</button>
               <button
                 onClick={goToStep3}
                 disabled={!canProceedArtifacts || loadingStep2}
@@ -780,24 +780,24 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                   cursor: canProceedArtifacts ? 'pointer' : 'default',
                 }}
               >
-                {loadingStep2 ? 'Carregando…' : 'Próximo →'}
+                {loadingStep2 ? 'Carregando...' : 'Avançar'}
               </button>
             </>
           )}
           {step === 3 && (
             <>
-              <button onClick={() => setStep(2)} style={ghostBtnStyle}>← Voltar</button>
+              <button onClick={() => setStep(2)} style={ghostBtnStyle}>Voltar</button>
               <button
                 onClick={goToStep4}
                 style={{ ...actionBtnStyle, marginLeft: 'auto' }}
               >
-                Próximo →
+                Avançar
               </button>
             </>
           )}
           {step === 4 && (
             <>
-              <button onClick={() => setStep(3)} style={ghostBtnStyle}>← Voltar</button>
+              <button onClick={() => setStep(3)} style={ghostBtnStyle}>Voltar</button>
               <button
                 onClick={handleInject}
                 disabled={!canInject || injecting}
@@ -808,7 +808,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                   cursor: canInject ? 'pointer' : 'default',
                 }}
               >
-                {injecting ? 'Injetando…' : 'Injetar'}
+                {injecting ? 'Injetando...' : 'Injetar'}
               </button>
             </>
           )}
@@ -875,6 +875,26 @@ function ContextCard({
   );
 }
 
+function CircleCheckbox({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <span style={circleCheckboxWrapStyle}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        style={circleCheckboxInputStyle}
+      />
+      <span style={circleCheckboxStyle(checked)} />
+    </span>
+  );
+}
+
 function MarkdownLibrary({
   sections,
   checked,
@@ -922,11 +942,9 @@ function MarkdownLibrary({
           )}
           {section.files.map((f) => (
             <label key={f.path} style={checkItemStyle}>
-              <input
-                type="checkbox"
+              <CircleCheckbox
                 checked={checked.has(f.path)}
                 onChange={() => onToggle(f.path)}
-                style={{ accentColor: 'var(--accent)', margin: 0, flexShrink: 0 }}
               />
               <span style={libraryItemTextStyle}>
                 <span style={libraryItemNameStyle}>{f.displayName}</span>
@@ -1052,7 +1070,7 @@ function ComposeInspector({
   return (
     <aside style={inspectorStyle}>
       <div>
-        <div style={inspectorTitleStyle}>Inspector</div>
+        <div style={inspectorTitleStyle}>Config</div>
         <div style={inspectorSubtitleStyle}>{section.titulo}</div>
       </div>
 
@@ -1068,7 +1086,7 @@ function ComposeInspector({
         </select>
       </InspectorField>
 
-      <InspectorField label="Nome do arquivo">
+      <InspectorField label="Arquivo">
         <input
           value={section.filename}
           onChange={(e) => onChange(section.id, { filename: e.target.value })}
@@ -1077,7 +1095,7 @@ function ComposeInspector({
         />
       </InspectorField>
 
-      <InspectorField label="Diretório destino">
+      <InspectorField label="Diretório">
         <input
           value={section.directory}
           onChange={(e) => onChange(section.id, { directory: e.target.value })}
@@ -1086,7 +1104,7 @@ function ComposeInspector({
         />
       </InspectorField>
 
-      <InspectorField label="Categoria do default">
+      <InspectorField label="Categoria">
         <select
           value={section.category}
           onChange={(e) => onChange(section.id, { category: e.target.value as ComposeSectionCategory })}
@@ -1097,7 +1115,7 @@ function ComposeInspector({
         </select>
       </InspectorField>
 
-      <InspectorField label="Modo de injeção">
+      <InspectorField label="Modo">
         <select
           value={section.injectionMode}
           onChange={(e) => onChange(section.id, { injectionMode: e.target.value as ComposeInjectionMode })}
@@ -1110,28 +1128,24 @@ function ComposeInspector({
       </InspectorField>
 
       <label style={inspectorCheckStyle}>
-        <input
-          type="checkbox"
+        <CircleCheckbox
           checked={section.isPinned}
-          onChange={(e) => onChange(section.id, { isPinned: e.target.checked })}
-          style={inspectorCheckboxStyle}
+          onChange={(checked) => onChange(section.id, { isPinned: checked })}
         />
         <span>
-          <strong style={inspectorCheckTitleStyle}>Fixar como default</strong>
-          <span style={inspectorCheckHintStyle}>Usar esta seção como principal.</span>
+          <strong style={inspectorCheckTitleStyle}>Principal</strong>
+          <span style={inspectorCheckHintStyle}>Usar como arquivo principal.</span>
         </span>
       </label>
 
       <label style={inspectorCheckStyle}>
-        <input
-          type="checkbox"
+        <CircleCheckbox
           checked={section.includeInAgent}
-          onChange={(e) => onChange(section.id, { includeInAgent: e.target.checked })}
-          style={inspectorCheckboxStyle}
+          onChange={(checked) => onChange(section.id, { includeInAgent: checked })}
         />
         <span>
-          <strong style={inspectorCheckTitleStyle}>Importar no Agent</strong>
-          <span style={inspectorCheckHintStyle}>Referenciar este markdown no agente gerado.</span>
+          <strong style={inspectorCheckTitleStyle}>Referenciar</strong>
+          <span style={inspectorCheckHintStyle}>Adicionar referencia no Agent.</span>
         </span>
       </label>
     </aside>
@@ -1166,9 +1180,9 @@ function InjectionReview({
     <div style={reviewWrapStyle}>
       <div style={reviewHeaderStyle}>
         <div>
-          <div style={reviewTitleStyle}>Revisao final</div>
+          <div style={reviewTitleStyle}>Revisão</div>
           <div style={reviewSubtitleStyle}>
-            {plan.length} arquivo{plan.length === 1 ? '' : 's'} pronto{plan.length === 1 ? '' : 's'} para injecao
+            {plan.length} arquivo{plan.length === 1 ? '' : 's'} pronto{plan.length === 1 ? '' : 's'} para injetar
           </div>
         </div>
         {errors.length > 0 && (
@@ -1407,12 +1421,6 @@ const inspectorCheckStyle: React.CSSProperties = {
   color: 'var(--text-secondary)',
 };
 
-const inspectorCheckboxStyle: React.CSSProperties = {
-  marginTop: 2,
-  accentColor: 'var(--accent)',
-  flexShrink: 0,
-};
-
 const inspectorCheckTitleStyle: React.CSSProperties = {
   display: 'block',
   fontFamily: 'var(--font-ui)',
@@ -1582,6 +1590,38 @@ const checkItemStyle: React.CSSProperties = {
   cursor: 'pointer',
   padding: '3px 0',
 };
+
+const circleCheckboxWrapStyle: React.CSSProperties = {
+  position: 'relative',
+  width: 16,
+  height: 16,
+  flex: '0 0 16px',
+  marginTop: 1,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const circleCheckboxInputStyle: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  margin: 0,
+  opacity: 0,
+  cursor: 'pointer',
+};
+
+const circleCheckboxStyle = (checked: boolean): React.CSSProperties => ({
+  width: 16,
+  height: 16,
+  borderRadius: 999,
+  border: `1px solid ${checked ? 'var(--accent)' : 'var(--text-muted)'}`,
+  background: checked ? 'var(--accent)' : 'transparent',
+  color: checked ? 'var(--bg-primary)' : 'transparent',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  pointerEvents: 'none',
+});
 
 const libraryItemTextStyle: React.CSSProperties = {
   minWidth: 0,
