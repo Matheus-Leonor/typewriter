@@ -57,3 +57,14 @@ CREATE TABLE IF NOT EXISTS recent_inject_paths (
   path TEXT PRIMARY KEY,
   used_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS compose_defaults (
+  id TEXT PRIMARY KEY,
+  titulo TEXT NOT NULL,
+  content TEXT NOT NULL,
+  category TEXT NOT NULL,
+  tipo TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);

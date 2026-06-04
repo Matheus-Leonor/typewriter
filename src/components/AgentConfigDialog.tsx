@@ -1,13 +1,16 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { db } from '../db/index';
-import type { InjectionHistoryEntry } from '../db/index';
+import type { InjectionHistoryEntry, ComposeDefaultRecord } from '../db/index';
 import {
+  addComposeSectionFromDefault,
   buildComposeInjectionPlan,
   COMPOSE_ARTIFACTS,
+  composeSectionDefaultFromRecord,
   createComposeState,
   syncComposeAgentReferences,
   syncComposeDirectories,
+  toComposeSectionDefault,
   updateComposeSectionContent,
   updateComposeSectionSettings,
 } from '../compose/composeModel';
@@ -153,6 +156,9 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
   const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [selectedComposeSectionId, setSelectedComposeSectionId] = useState<string | null>(null);
+  const [savedDefaults, setSavedDefaults] = useState<ComposeDefaultRecord[]>([]);
+  const [savingDefaultId, setSavingDefaultId] = useState<string | null>(null);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const lastGeneratedAgentContentRef = useRef('');
 
   // Step 4
@@ -262,13 +268,21 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     ];
 
     const sections: VaultLibrarySection[] = [
-      { id: 'pinned', title: 'Fixados', files: pinned },
+      { id: 'pinned', title: 'Predefinidos', files: pinned },
       { id: 'notes', title: 'Notas', files: notes },
       { id: 'modules', title: 'Módulos / Templates', files: modules },
     ];
 
     return { sections, files: [...pinned, ...notes, ...modules] };
   }, [vaultPath]);
+
+  const loadComposeDefaults = useCallback(async () => {
+    try {
+      setSavedDefaults(await db.composeDefaults.list());
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
 
   const goToStep2 = useCallback(() => {
     if (!selected || selected === '__create_new__') return;
@@ -282,6 +296,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     if (selectedArtifacts.size === 0 || !selected || selected === '__create_new__') return;
     setLoadingStep2(true);
     try {
+      await loadComposeDefaults();
       const { sections, files } = await loadVaultLibrary();
 
       const templatePath = joinPath(vaultPath, 'agents', 'templates', getTemplateFile(selected));
@@ -322,7 +337,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     } finally {
       setLoadingStep2(false);
     }
-  }, [loadVaultLibrary, selected, selectedArtifacts, targetPath, vaultPath]);
+  }, [loadComposeDefaults, loadVaultLibrary, selected, selectedArtifacts, targetPath, vaultPath]);
 
   const goBack = useCallback(() => {
     setStep(1);
@@ -402,6 +417,53 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     >>,
   ) => {
     setCompose((current) => updateComposeSectionSettings(current, sectionId, patch));
+  }, []);
+
+  const handleSaveDefault = useCallback(async (section: ComposeSection) => {
+    const def = toComposeSectionDefault(section);
+    setSavingDefaultId(section.id);
+    setDefaultsError(null);
+    try {
+      await db.composeDefaults.save({
+        id: crypto.randomUUID(),
+        titulo: def.titulo,
+        content: def.content,
+        category: def.category,
+        tipo: def.tipo,
+        metadata: JSON.stringify({
+          filename: def.filename,
+          includeInAgent: def.includeInAgent,
+          injectionMode: def.injectionMode,
+        }),
+      });
+      await loadComposeDefaults();
+    } catch (err) {
+      console.error(err);
+      setDefaultsError('Erro ao fixar — veja o console');
+    } finally {
+      setSavingDefaultId(null);
+    }
+  }, [loadComposeDefaults]);
+
+  const handleAddDefault = useCallback((record: ComposeDefaultRecord) => {
+    const def = composeSectionDefaultFromRecord(record);
+    setCompose((current) => {
+      const next = addComposeSectionFromDefault(current, def, targetPath);
+      const added = next?.sections[next.sections.length - 1];
+      if (added) setSelectedComposeSectionId(added.id);
+      return next;
+    });
+  }, [targetPath]);
+
+  const handleDeleteDefault = useCallback(async (id: string) => {
+    setDefaultsError(null);
+    try {
+      await db.composeDefaults.delete(id);
+      setSavedDefaults((current) => current.filter((record) => record.id !== id));
+    } catch (err) {
+      console.error(err);
+      setDefaultsError('Erro ao remover fixado — veja o console');
+    }
   }, []);
 
   const toggleArtifact = useCallback((artifact: ComposeSectionType) => {
@@ -666,6 +728,14 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
           <div style={step2BodyStyle}>
             {/* Left panel — markdown library */}
             <div style={leftPanelStyle}>
+              {defaultsError && (
+                <div style={defaultsErrorStyle}>{defaultsError}</div>
+              )}
+              <SavedDefaultsList
+                defaults={savedDefaults}
+                onAdd={handleAddDefault}
+                onDelete={handleDeleteDefault}
+              />
               <MarkdownLibrary
                 sections={librarySections}
                 checked={checkedLibraryFiles}
@@ -699,6 +769,8 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
               <ComposeInspector
                 section={selectedComposeSection}
                 onChange={handleComposeSectionSettingsChange}
+                onSaveDefault={handleSaveDefault}
+                savingDefault={savingDefaultId === selectedComposeSection?.id}
               />
             </div>
           </div>
@@ -958,6 +1030,53 @@ function MarkdownLibrary({
   );
 }
 
+function SavedDefaultsList({
+  defaults,
+  onAdd,
+  onDelete,
+}: {
+  defaults: ComposeDefaultRecord[];
+  onAdd: (record: ComposeDefaultRecord) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={sectionLabelStyle}>Fixados</div>
+      {defaults.length === 0 ? (
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', padding: '2px 0 4px' }}>
+          Nenhum fixado salvo
+        </span>
+      ) : (
+        defaults.map((record) => (
+          <div key={record.id} style={savedDefaultItemStyle}>
+            <button
+              onClick={() => onAdd(record)}
+              style={savedDefaultAddBtnStyle}
+              title="Adicionar como nova seção"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 14, color: 'var(--text-muted)' }}>
+                push_pin
+              </span>
+              <span style={libraryItemTextStyle}>
+                <span style={libraryItemNameStyle}>{record.titulo}</span>
+                <span style={libraryItemKindStyle}>{record.tipo}</span>
+              </span>
+            </button>
+            <button
+              onClick={() => onDelete(record.id)}
+              style={savedDefaultDeleteBtnStyle}
+              title="Remover fixado"
+              aria-label={`Remover fixado ${record.titulo}`}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 14 }}>close</span>
+            </button>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 function ComposeEditor({
   compose,
   selectedSectionId,
@@ -1040,6 +1159,8 @@ function ComposeSectionEditor({
 function ComposeInspector({
   section,
   onChange,
+  onSaveDefault,
+  savingDefault,
 }: {
   section: ComposeSection | null;
   onChange: (
@@ -1049,6 +1170,8 @@ function ComposeInspector({
       'tipo' | 'titulo' | 'filename' | 'directory' | 'isPinned' | 'category' | 'includeInAgent' | 'injectionMode'
     >>,
   ) => void;
+  onSaveDefault: (section: ComposeSection) => void;
+  savingDefault: boolean;
 }) {
   if (!section) {
     return (
@@ -1148,6 +1271,16 @@ function ComposeInspector({
           <span style={inspectorCheckHintStyle}>Adicionar referencia no Agent.</span>
         </span>
       </label>
+
+      <button
+        onClick={() => onSaveDefault(section)}
+        disabled={savingDefault}
+        style={{ ...inspectorSaveDefaultBtnStyle, opacity: savingDefault ? 0.45 : 1 }}
+        title="Salvar esta seção como fixado para reutilizar em composições futuras"
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: 15 }}>push_pin</span>
+        {savingDefault ? 'Fixando...' : 'Salvar como fixado'}
+      </button>
     </aside>
   );
 }
@@ -1436,6 +1569,56 @@ const inspectorCheckHintStyle: React.CSSProperties = {
   fontSize: 'var(--text-xs)',
   color: 'var(--text-muted)',
   lineHeight: 1.35,
+};
+
+const inspectorSaveDefaultBtnStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 6,
+  marginTop: 4,
+  padding: '7px 10px',
+  background: 'var(--bg-overlay)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 4,
+  color: 'var(--text-secondary)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  cursor: 'pointer',
+};
+
+const savedDefaultItemStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '2px 0',
+};
+
+const savedDefaultAddBtnStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  padding: '3px 0',
+  textAlign: 'left',
+};
+
+const savedDefaultDeleteBtnStyle: React.CSSProperties = {
+  width: 20,
+  height: 20,
+  flexShrink: 0,
+  borderRadius: '50%',
+  border: '0.5px solid var(--border)',
+  background: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
+  color: 'var(--text-muted)',
 };
 
 const previewLabelStyle: React.CSSProperties = {
@@ -1938,6 +2121,16 @@ const reviewEmptyStyle: React.CSSProperties = {
 
 const reviewBlockingStyle: React.CSSProperties = {
   padding: '8px 10px',
+  borderRadius: 4,
+  background: 'rgba(239,68,68,0.08)',
+  color: '#ef4444',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  lineHeight: 1.4,
+};
+
+const defaultsErrorStyle: React.CSSProperties = {
+  padding: '6px 8px',
   borderRadius: 4,
   background: 'rgba(239,68,68,0.08)',
   color: '#ef4444',

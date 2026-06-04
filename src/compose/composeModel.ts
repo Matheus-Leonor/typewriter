@@ -252,6 +252,98 @@ export function syncComposeAgentReferences(compose: ComposeState | null): Compos
   return changed ? { ...compose, sections, updatedAt: Date.now() } : compose;
 }
 
+export interface ComposeSectionDefault {
+  titulo: string;
+  tipo: ComposeSectionType;
+  category: ComposeSectionCategory;
+  content: string;
+  filename: string;
+  includeInAgent: boolean;
+  injectionMode: ComposeInjectionMode;
+}
+
+function coerceSectionType(value: string): ComposeSectionType {
+  return (COMPOSE_SECTION_TYPES as readonly string[]).includes(value)
+    ? (value as ComposeSectionType)
+    : 'markdown';
+}
+
+function coerceInjectionMode(value: unknown): ComposeInjectionMode {
+  return value === 'overwrite' || value === 'append' ? value : 'create';
+}
+
+/** Build a reusable default from a compose section (without the per-target directory). */
+export function toComposeSectionDefault(section: ComposeSection): ComposeSectionDefault {
+  return {
+    titulo: section.titulo,
+    tipo: section.tipo,
+    category: section.category,
+    content: section.content,
+    filename: section.filename,
+    includeInAgent: section.includeInAgent,
+    injectionMode: section.injectionMode,
+  };
+}
+
+/** Reconstruct a default from a persisted record (content/category/tipo + metadata blob). */
+export function composeSectionDefaultFromRecord(record: {
+  titulo: string;
+  content: string;
+  category: string;
+  tipo: string;
+  metadata: string;
+}): ComposeSectionDefault {
+  let metadata: Record<string, unknown> = {};
+  try {
+    metadata = JSON.parse(record.metadata) as Record<string, unknown>;
+  } catch {
+    metadata = {};
+  }
+
+  const tipo = coerceSectionType(record.tipo);
+  return {
+    titulo: record.titulo,
+    tipo,
+    category: record.category === 'primary' ? 'primary' : 'artifact',
+    content: record.content,
+    filename:
+      typeof metadata.filename === 'string' && metadata.filename.trim()
+        ? metadata.filename
+        : COMPOSE_ARTIFACT_BY_ID.get(tipo)?.defaultFilename ?? 'markdown.md',
+    includeInAgent:
+      typeof metadata.includeInAgent === 'boolean' ? metadata.includeInAgent : true,
+    injectionMode: coerceInjectionMode(metadata.injectionMode),
+  };
+}
+
+/** Add a saved default as a new artifact section in the current compose. */
+export function addComposeSectionFromDefault(
+  compose: ComposeState | null,
+  def: ComposeSectionDefault,
+  targetDirectory: string,
+): ComposeState | null {
+  if (!compose) return compose;
+
+  const section: ComposeSection = {
+    id: createComposeId('section'),
+    tipo: def.tipo,
+    titulo: def.titulo,
+    filename: def.filename,
+    directory: targetDirectory,
+    content: def.content,
+    isPinned: false,
+    category: 'artifact',
+    includeInAgent: def.includeInAgent,
+    injectionMode: def.injectionMode,
+  };
+
+  return syncComposeAgentReferences({
+    ...compose,
+    sections: [...compose.sections, section],
+    updatedAt: Date.now(),
+  });
+}
+
 export function createDefaultSectionContent(tipo: ComposeSectionType, agentContent: string): string {
   if (tipo === 'agent') return agentContent;
   return MINIMAL_SECTION_CONTENT[tipo];
