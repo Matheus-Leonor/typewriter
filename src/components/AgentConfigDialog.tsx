@@ -1,13 +1,20 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { db } from '../db/index';
-import type { InjectionHistoryEntry } from '../db/index';
+import type { InjectionHistoryEntry, ComposeDefaultRecord } from '../db/index';
 import {
+  addComposeSection,
+  addComposeSectionFromDefault,
   buildComposeInjectionPlan,
   COMPOSE_ARTIFACTS,
+  composeDefaultId,
+  composeSectionDefaultFromRecord,
+  createBlankComposeSection,
   createComposeState,
+  removeComposeSection,
   syncComposeAgentReferences,
   syncComposeDirectories,
+  toComposeSectionDefault,
   updateComposeSectionContent,
   updateComposeSectionSettings,
 } from '../compose/composeModel';
@@ -15,7 +22,6 @@ import type {
   ComposeInjectionPlanItem,
   ComposeInjectionMode,
   ComposeSection,
-  ComposeSectionCategory,
   ComposeSectionType,
   ComposeState,
 } from '../compose/composeModel';
@@ -34,29 +40,9 @@ const BUILTIN_TYPES = [
 ] as const;
 
 const BUILTIN_FILES: Set<string> = new Set(BUILTIN_TYPES.map((t) => t.file));
-const REMOVED_DEFAULT_LIBRARY_FILES = new Set([
-  'frontend-design.md',
-  'kotlin-android.md',
-  'spring-boot.md',
-  'tauri-rust.md',
-]);
 
 interface FsEntry { name: string; path: string; is_dir: boolean; }
 interface CustomTemplate { id: string; name: string; }
-type VaultLibrarySectionId = 'pinned' | 'notes' | 'modules';
-type VaultFileKind = 'template' | 'skill' | 'doc' | 'note';
-interface VaultFile {
-  name: string;
-  path: string;
-  displayName: string;
-  kind: VaultFileKind;
-  sectionId: VaultLibrarySectionId;
-}
-interface VaultLibrarySection {
-  id: VaultLibrarySectionId;
-  title: string;
-  files: VaultFile[];
-}
 
 function joinPath(base: string, ...parts: string[]): string {
   const sep = base.includes('\\') ? '\\' : '/';
@@ -93,42 +79,23 @@ function localTimestamp(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function displayMarkdownName(name: string): string {
-  return name.replace(/\.md$/, '').replace(/-/g, ' ');
-}
-
-function shouldShowLibraryFile(entry: FsEntry): boolean {
-  return !entry.is_dir && entry.name.endsWith('.md') && !REMOVED_DEFAULT_LIBRARY_FILES.has(entry.name);
-}
 
 function buildAgentContent(params: {
   selected: string;
   selectedArtifacts: Set<ComposeSectionType>;
   templateContent: string;
-  checkedLibraryFiles: Set<string>;
-  fileContents: Map<string, string>;
 }): string {
-  const libraryNames = [...params.checkedLibraryFiles]
-    .map((p) => p.split(/[/\\]/).pop()?.replace(/\.md$/, '') ?? '')
-    .filter(Boolean);
   const artifactNames = COMPOSE_ARTIFACTS
     .filter((option) => params.selectedArtifacts.has(option.id))
     .map((option) => option.name);
 
   const header = [
     `<!-- gerado pelo TypeWriter em ${localTimestamp()} -->`,
-    `<!-- template: ${getTemplateSlug(params.selected)} | artefatos: ${artifactNames.join(', ')} | biblioteca: ${libraryNames.join(', ')} -->`,
+    `<!-- template: ${getTemplateSlug(params.selected)} | artefatos: ${artifactNames.join(', ')} -->`,
     '',
   ].join('\n');
 
-  const parts = [header, stripFrontmatter(params.templateContent)];
-
-  for (const path of params.checkedLibraryFiles) {
-    const c = params.fileContents.get(path);
-    if (c) parts.push('\n---\n', stripFrontmatter(c));
-  }
-
-  return parts.join('\n');
+  return [header, stripFrontmatter(params.templateContent)].join('\n');
 }
 
 export function AgentConfigDialog({ onClose, vaultPath }: Props) {
@@ -145,14 +112,12 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
 
   // Step 3
   const [loadingStep2, setLoadingStep2] = useState(false);
-  const [librarySections, setLibrarySections] = useState<VaultLibrarySection[]>([]);
-  const [checkedLibraryFiles, setCheckedLibraryFiles] = useState<Set<string>>(new Set());
-  const [newMarkdownName, setNewMarkdownName] = useState('');
-  const [creatingMarkdown, setCreatingMarkdown] = useState(false);
   const [templateContent, setTemplateContent] = useState('');
-  const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [selectedComposeSectionId, setSelectedComposeSectionId] = useState<string | null>(null);
+  const [savedDefaults, setSavedDefaults] = useState<ComposeDefaultRecord[]>([]);
+  const [savingDefaultId, setSavingDefaultId] = useState<string | null>(null);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const lastGeneratedAgentContentRef = useRef('');
 
   // Step 4
@@ -216,59 +181,13 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     }
   }, [newName, newContent, vaultPath, loadCustoms]);
 
-  const loadVaultLibrary = useCallback(async (): Promise<{
-    sections: VaultLibrarySection[];
-    files: VaultFile[];
-  }> => {
-    const listMarkdowns = async (subdir: string) => {
-      try {
-        return await invoke<FsEntry[]>('list_vault_directory', { vaultPath, subdir });
-      } catch {
-        return [];
-      }
-    };
-
-    const [templateEntries, noteEntries, skillEntries, docEntries] = await Promise.all([
-      listMarkdowns('agents/templates'),
-      listMarkdowns('Notas'),
-      listMarkdowns('skills'),
-      listMarkdowns('docs'),
-    ]);
-
-    const toVaultFile = (
-      e: FsEntry,
-      kind: VaultFileKind,
-      sectionId: VaultLibrarySectionId,
-    ): VaultFile => ({
-      name: e.name,
-      path: e.path,
-      displayName: displayMarkdownName(e.name),
-      kind,
-      sectionId,
-    });
-
-    const pinned = templateEntries
-      .filter((e) => shouldShowLibraryFile(e) && BUILTIN_FILES.has(e.name))
-      .map((e) => toVaultFile(e, 'template', 'pinned'));
-    const notes = noteEntries
-      .filter(shouldShowLibraryFile)
-      .map((e) => toVaultFile(e, 'note', 'notes'));
-    const modules = [
-      ...templateEntries
-        .filter((e) => shouldShowLibraryFile(e) && !BUILTIN_FILES.has(e.name))
-        .map((e) => toVaultFile(e, 'template', 'modules')),
-      ...skillEntries.filter(shouldShowLibraryFile).map((e) => toVaultFile(e, 'skill', 'modules')),
-      ...docEntries.filter(shouldShowLibraryFile).map((e) => toVaultFile(e, 'doc', 'modules')),
-    ];
-
-    const sections: VaultLibrarySection[] = [
-      { id: 'pinned', title: 'Fixados', files: pinned },
-      { id: 'notes', title: 'Notas', files: notes },
-      { id: 'modules', title: 'Módulos / Templates', files: modules },
-    ];
-
-    return { sections, files: [...pinned, ...notes, ...modules] };
-  }, [vaultPath]);
+  const loadComposeDefaults = useCallback(async () => {
+    try {
+      setSavedDefaults(await db.composeDefaults.list());
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
 
   const goToStep2 = useCallback(() => {
     if (!selected || selected === '__create_new__') return;
@@ -282,29 +201,14 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     if (selectedArtifacts.size === 0 || !selected || selected === '__create_new__') return;
     setLoadingStep2(true);
     try {
-      const { sections, files } = await loadVaultLibrary();
-
+      await loadComposeDefaults();
       const templatePath = joinPath(vaultPath, 'agents', 'templates', getTemplateFile(selected));
       const tmplContent = await invoke<string>('read_vault_file', { path: templatePath });
-
-      const contents = new Map<string, string>();
-      await Promise.all(
-        files.map(async (f) => {
-          const c = await invoke<string>('read_vault_file', { path: f.path });
-          contents.set(f.path, c);
-        }),
-      );
-
-      setLibrarySections(sections);
       setTemplateContent(tmplContent);
-      setFileContents(contents);
-      setCheckedLibraryFiles(new Set());
       const initialAgentContent = buildAgentContent({
         selected,
         selectedArtifacts,
         templateContent: tmplContent,
-        checkedLibraryFiles: new Set(),
-        fileContents: contents,
       });
       lastGeneratedAgentContentRef.current = initialAgentContent;
       const nextCompose = createComposeState({
@@ -322,27 +226,19 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     } finally {
       setLoadingStep2(false);
     }
-  }, [loadVaultLibrary, selected, selectedArtifacts, targetPath, vaultPath]);
+  }, [loadComposeDefaults, selected, selectedArtifacts, targetPath, vaultPath]);
 
   const goBack = useCallback(() => {
     setStep(1);
     setSelectedArtifacts(new Set());
-    setCheckedLibraryFiles(new Set());
     setCompose(null);
     setSelectedComposeSectionId(null);
   }, []);
 
   const agentContent = useMemo(() => {
     if (step < 3 || !selected) return '';
-
-    return buildAgentContent({
-      selected,
-      selectedArtifacts,
-      templateContent,
-      checkedLibraryFiles,
-      fileContents,
-    });
-  }, [step, selected, selectedArtifacts, checkedLibraryFiles, templateContent, fileContents]);
+    return buildAgentContent({ selected, selectedArtifacts, templateContent });
+  }, [step, selected, selectedArtifacts, templateContent]);
 
   useEffect(() => {
     if (step < 3 || !selected) return;
@@ -404,6 +300,75 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     setCompose((current) => updateComposeSectionSettings(current, sectionId, patch));
   }, []);
 
+  const handleSaveDefault = useCallback(async (section: ComposeSection) => {
+    const def = toComposeSectionDefault(section);
+    setSavingDefaultId(section.id);
+    setDefaultsError(null);
+    try {
+      await db.composeDefaults.save({
+        id: composeDefaultId(section),
+        titulo: def.titulo,
+        content: def.content,
+        category: def.category,
+        tipo: def.tipo,
+        metadata: JSON.stringify({
+          filename: def.filename,
+          includeInAgent: def.includeInAgent,
+          injectionMode: def.injectionMode,
+        }),
+      });
+      await loadComposeDefaults();
+    } catch (err) {
+      console.error(err);
+      setDefaultsError('Erro ao fixar — veja o console');
+    } finally {
+      setSavingDefaultId(null);
+    }
+  }, [loadComposeDefaults]);
+
+  const handleAddDefault = useCallback((record: ComposeDefaultRecord) => {
+    const def = composeSectionDefaultFromRecord(record);
+    setCompose((current) => {
+      const next = addComposeSectionFromDefault(current, def, targetPath);
+      const added = next?.sections[next.sections.length - 1];
+      if (added) setSelectedComposeSectionId(added.id);
+      return next;
+    });
+  }, [targetPath]);
+
+  const handleNewFile = useCallback(() => {
+    setCompose((current) => {
+      if (!current) return current;
+      const section = createBlankComposeSection(targetPath);
+      const next = addComposeSection(current, section);
+      setSelectedComposeSectionId(section.id);
+      return next;
+    });
+  }, [targetPath]);
+
+  const handleDeleteSection = useCallback((sectionId: string) => {
+    setCompose((current) => {
+      const next = removeComposeSection(current, sectionId);
+      if (next && next !== current) {
+        setSelectedComposeSectionId((prev) =>
+          prev === sectionId ? next.primarySectionId || next.sections[0]?.id || null : prev,
+        );
+      }
+      return next;
+    });
+  }, []);
+
+  const handleDeleteDefault = useCallback(async (id: string) => {
+    setDefaultsError(null);
+    try {
+      await db.composeDefaults.delete(id);
+      setSavedDefaults((current) => current.filter((record) => record.id !== id));
+    } catch (err) {
+      console.error(err);
+      setDefaultsError('Erro ao remover fixado — veja o console');
+    }
+  }, []);
+
   const toggleArtifact = useCallback((artifact: ComposeSectionType) => {
     setSelectedArtifacts((prev) => {
       const next = new Set(prev);
@@ -411,53 +376,6 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
       return next;
     });
   }, []);
-
-  const toggleLibraryFile = useCallback((path: string) => {
-    setCheckedLibraryFiles((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
-      return next;
-    });
-  }, []);
-
-  const handleCreateMarkdown = useCallback(async () => {
-    const slug = slugify(newMarkdownName) || 'novo-markdown';
-    setCreatingMarkdown(true);
-    try {
-      const notesDir = joinPath(vaultPath, 'Notas');
-      let path: string;
-      try {
-        path = await invoke<string>('create_note', { dirPath: notesDir, name: `${slug}.md` });
-      } catch {
-        await invoke('create_folder', { dirPath: vaultPath, name: 'Notas' });
-        path = await invoke<string>('create_note', { dirPath: notesDir, name: `${slug}.md` });
-      }
-      const file: VaultFile = {
-        name: `${slug}.md`,
-        path,
-        displayName: displayMarkdownName(`${slug}.md`),
-        kind: 'note',
-        sectionId: 'notes',
-      };
-      setLibrarySections((current) =>
-        current.map((section) =>
-          section.id === 'notes' ? { ...section, files: [file, ...section.files] } : section,
-        ),
-      );
-      setFileContents((current) => {
-        const next = new Map(current);
-        next.set(path, '');
-        return next;
-      });
-      setCheckedLibraryFiles((current) => new Set(current).add(path));
-      setNewMarkdownName('');
-    } catch (err) {
-      console.error(err);
-      setToastMsg('Erro ao criar markdown vazio');
-    } finally {
-      setCreatingMarkdown(false);
-    }
-  }, [newMarkdownName, vaultPath]);
 
   const goToStep4 = useCallback(async () => {
     try {
@@ -487,22 +405,11 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
           mode: item.mode,
         });
       }
-      const selectedLibraryItems = librarySections.flatMap((section) =>
-        section.files.filter((file) => checkedLibraryFiles.has(file.path)),
-      );
-      const toNames = (kind: VaultFileKind) =>
-        selectedLibraryItems
-          .filter((file) => file.kind === kind)
-          .map((file) => file.name.replace(/\.md$/, ''));
       const entry: InjectionHistoryEntry = {
         id: crypto.randomUUID(),
         template_name: getTemplateSlug(selected!),
-        skills: JSON.stringify(toNames('skill')),
-        docs: JSON.stringify([
-          ...toNames('doc'),
-          ...toNames('note'),
-          ...toNames('template'),
-        ]),
+        skills: JSON.stringify([]),
+        docs: JSON.stringify([]),
         target_path: plan.find((item) => item.isPrimary)?.directory ?? plan[0].directory,
         filename: plan.find((item) => item.isPrimary)?.filename ?? plan[0].filename,
       };
@@ -516,7 +423,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
     } finally {
       setInjecting(false);
     }
-  }, [compose, checkedLibraryFiles, librarySections, selected]);
+  }, [compose, selected]);
 
   const isCreateNew = selected === '__create_new__';
   const canProceed = selected !== null && selected !== '__create_new__';
@@ -525,13 +432,12 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
   const injectionPlan = useMemo(() => buildComposeInjectionPlan(compose), [compose]);
   const injectionErrors = injectionPlan.flatMap((item) => item.errors.map((error) => `${item.title}: ${error}`));
   const canInject = injectionPlan.length > 0 && injectionErrors.length === 0;
-  const composeSectionsCount = compose?.sections.length ?? selectedArtifacts.size;
 
   const stepHint =
-    step === 1 ? 'Passo 1 — Escolha o contexto'
-    : step === 2 ? 'Passo 2 — O que você quer criar?'
-    : step === 3 ? 'Passo 3 — Compor'
-    : 'Passo 4 — Revisar e injetar';
+    step === 1 ? 'Passo 1: Contexto'
+    : step === 2 ? 'Passo 2: Artefatos'
+    : step === 3 ? 'Passo 3: Compose'
+    : 'Passo 4: Injetar';
 
   return (
     <>
@@ -563,7 +469,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         {/* Step 1 body */}
         {step === 1 && (
           <div style={bodyStyle}>
-            <div style={sectionLabelStyle}>Tipo de contexto</div>
+            <div style={sectionLabelStyle}>Contexto</div>
 
             <div style={gridStyle}>
               {BUILTIN_TYPES.map((type) => (
@@ -599,7 +505,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                 <span className="material-symbols-outlined" style={{ fontSize: 20, color: 'var(--text-muted)' }}>
                   add_circle
                 </span>
-                <span style={{ ...cardNameStyle, color: 'var(--text-muted)' }}>Criar novo tipo</span>
+                <span style={{ ...cardNameStyle, color: 'var(--text-muted)' }}>Novo contexto</span>
               </button>
             </div>
 
@@ -608,14 +514,14 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                 <input
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Nome do template (ex: minha-feature)"
+                  placeholder="Nome do contexto"
                   autoFocus
                   style={inputStyle}
                 />
                 <textarea
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
-                  placeholder="Conteúdo do template em Markdown…"
+                  placeholder="Template em Markdown..."
                   rows={6}
                   style={textareaStyle}
                 />
@@ -625,7 +531,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                     disabled={saving || !canSave}
                     style={{ ...actionBtnStyle, opacity: canSave ? 1 : 0.35, cursor: canSave ? 'pointer' : 'default' }}
                   >
-                    {saving ? 'Salvando…' : 'Salvar template'}
+                    {saving ? 'Salvando...' : 'Salvar'}
                   </button>
                   <button
                     onClick={() => { setSelected(null); setNewName(''); setNewContent(''); }}
@@ -643,8 +549,8 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         {step === 2 && (
           <div style={bodyStyle}>
             <div>
-              <div style={sectionLabelStyle}>O que você quer criar?</div>
-              <p style={helperTextStyle}>Selecione um ou mais artefatos para este contexto.</p>
+              <div style={sectionLabelStyle}>Artefatos</div>
+              <p style={helperTextStyle}>Selecione o que será criado.</p>
             </div>
 
             <div style={gridStyle}>
@@ -664,31 +570,33 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         {/* Step 3 body */}
         {step === 3 && (
           <div style={step2BodyStyle}>
-            {/* Left panel — markdown library */}
+            {/* Left panel — biblioteca de markdowns reutilizáveis */}
             <div style={leftPanelStyle}>
-              <MarkdownLibrary
-                sections={librarySections}
-                checked={checkedLibraryFiles}
-                newMarkdownName={newMarkdownName}
-                creatingMarkdown={creatingMarkdown}
-                onToggle={toggleLibraryFile}
-                onNewMarkdownNameChange={setNewMarkdownName}
-                onCreateMarkdown={handleCreateMarkdown}
+              {defaultsError && (
+                <div style={defaultsErrorStyle}>{defaultsError}</div>
+              )}
+              <ComposeLibrary
+                savedDefaults={savedDefaults}
+                onInjectDefault={handleAddDefault}
+                onDeleteDefault={handleDeleteDefault}
               />
             </div>
 
             {/* Divider */}
             <div style={panelDividerStyle} />
 
-            {/* Right panel — compose editor */}
+            {/* Center panel — tabbed single editor */}
             <div style={rightPanelStyle}>
-              <div style={previewLabelStyle}>
-                Compose · {composeSectionsCount} seção{composeSectionsCount === 1 ? '' : 'es'} editável
-              </div>
-              <ComposeEditor
+              <ComposeTabs
                 compose={compose}
                 selectedSectionId={selectedComposeSection?.id ?? null}
+                primarySectionId={compose?.primarySectionId ?? null}
                 onSelectSection={setSelectedComposeSectionId}
+                onDeleteSection={handleDeleteSection}
+                onNewFile={handleNewFile}
+              />
+              <ComposeEditor
+                section={selectedComposeSection}
                 onChangeSection={handleComposeSectionChange}
               />
             </div>
@@ -699,6 +607,8 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
               <ComposeInspector
                 section={selectedComposeSection}
                 onChange={handleComposeSectionSettingsChange}
+                onSaveDefault={handleSaveDefault}
+                savingDefault={savingDefaultId === selectedComposeSection?.id}
               />
             </div>
           </div>
@@ -707,7 +617,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
         {/* Step 4 body */}
         {step === 4 && (
           <div style={bodyStyle}>
-            <div style={sectionLabelStyle}>Diretório base</div>
+            <div style={sectionLabelStyle}>Destino</div>
 
             <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -716,7 +626,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                   onChange={(e) => setTargetPath(e.target.value)}
                   onFocus={() => recentPaths.length > 0 && setShowPathDropdown(true)}
                   onBlur={() => setTimeout(() => setShowPathDropdown(false), 150)}
-                  placeholder="Caminho do diretório (ex: C:\projetos\meu-app)"
+                  placeholder="Caminho do projeto"
                   style={{ ...inputStyle, flex: 1 }}
                 />
                 <button onClick={handlePickFolder} style={folderBtnStyle} title="Selecionar pasta">
@@ -764,12 +674,12 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                 cursor: canProceed ? 'pointer' : 'default',
               }}
             >
-              {loadingStep2 ? 'Carregando…' : 'Próximo →'}
+              {loadingStep2 ? 'Carregando...' : 'Avançar'}
             </button>
           )}
           {step === 2 && (
             <>
-              <button onClick={goBack} style={ghostBtnStyle}>← Voltar</button>
+              <button onClick={goBack} style={ghostBtnStyle}>Voltar</button>
               <button
                 onClick={goToStep3}
                 disabled={!canProceedArtifacts || loadingStep2}
@@ -780,24 +690,24 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                   cursor: canProceedArtifacts ? 'pointer' : 'default',
                 }}
               >
-                {loadingStep2 ? 'Carregando…' : 'Próximo →'}
+                {loadingStep2 ? 'Carregando...' : 'Avançar'}
               </button>
             </>
           )}
           {step === 3 && (
             <>
-              <button onClick={() => setStep(2)} style={ghostBtnStyle}>← Voltar</button>
+              <button onClick={() => setStep(2)} style={ghostBtnStyle}>Voltar</button>
               <button
                 onClick={goToStep4}
                 style={{ ...actionBtnStyle, marginLeft: 'auto' }}
               >
-                Próximo →
+                Avançar
               </button>
             </>
           )}
           {step === 4 && (
             <>
-              <button onClick={() => setStep(3)} style={ghostBtnStyle}>← Voltar</button>
+              <button onClick={() => setStep(3)} style={ghostBtnStyle}>Voltar</button>
               <button
                 onClick={handleInject}
                 disabled={!canInject || injecting}
@@ -808,7 +718,7 @@ export function AgentConfigDialog({ onClose, vaultPath }: Props) {
                   cursor: canInject ? 'pointer' : 'default',
                 }}
               >
-                {injecting ? 'Injetando…' : 'Injetar'}
+                {injecting ? 'Injetando...' : 'Injetar'}
               </button>
             </>
           )}
@@ -875,83 +785,207 @@ function ContextCard({
   );
 }
 
-function MarkdownLibrary({
-  sections,
-  checked,
-  newMarkdownName,
-  creatingMarkdown,
-  onToggle,
-  onNewMarkdownNameChange,
-  onCreateMarkdown,
+function SelectField({
+  label,
+  value,
+  options,
+  onChange,
 }: {
-  sections: VaultLibrarySection[];
-  checked: Set<string>;
-  newMarkdownName: string;
-  creatingMarkdown: boolean;
-  onToggle: (path: string) => void;
-  onNewMarkdownNameChange: (value: string) => void;
-  onCreateMarkdown: () => void;
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const selectedLabel = options.find((o) => o.value === value)?.label ?? value;
+
+  return (
+    <label style={inspectorFieldStyle}>
+      <span style={inspectorLabelStyle}>{label}</span>
+      <div ref={wrapRef} style={{ position: 'relative' }}>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          style={customSelectTriggerStyle}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+        >
+          <span>{selectedLabel}</span>
+          <span
+            className="material-symbols-outlined"
+            style={{ fontSize: 14, lineHeight: 1, color: 'var(--text-muted)', flexShrink: 0 }}
+          >
+            {open ? 'expand_less' : 'expand_more'}
+          </span>
+        </button>
+        {open && (
+          <div style={customDropdownListStyle} role="listbox">
+            {options.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                role="option"
+                aria-selected={opt.value === value}
+                onClick={() => { onChange(opt.value); setOpen(false); }}
+                style={{
+                  ...customDropdownItemStyle,
+                  background: opt.value === value ? 'var(--accent-muted)' : 'none',
+                  color: opt.value === value ? 'var(--text-primary)' : 'var(--text-secondary)',
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+function ComposeLibrary({
+  savedDefaults,
+  onInjectDefault,
+  onDeleteDefault,
+}: {
+  savedDefaults: ComposeDefaultRecord[];
+  onInjectDefault: (record: ComposeDefaultRecord) => void;
+  onDeleteDefault: (id: string) => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={libraryCreateStyle}>
-        <input
-          value={newMarkdownName}
-          onChange={(e) => onNewMarkdownNameChange(e.target.value)}
-          placeholder="novo markdown"
-          style={libraryInputStyle}
-        />
-        <button
-          onClick={onCreateMarkdown}
-          disabled={creatingMarkdown}
-          style={{ ...libraryCreateBtnStyle, opacity: creatingMarkdown ? 0.45 : 1 }}
-          title="Criar markdown vazio em Notas"
-          aria-label="Criar markdown vazio"
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: 15 }}>add</span>
-        </button>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div>
+        <div style={sectionLabelStyle}>Biblioteca</div>
+        <p style={libraryHintStyle}>
+          Injete um predefinido como aba editável.
+        </p>
       </div>
 
-      {sections.map((section) => (
-        <div key={section.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={sectionLabelStyle}>{section.title}</div>
-          {section.files.length === 0 && (
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', padding: '2px 0 8px' }}>
-              Nenhum markdown encontrado
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={librarySubLabelStyle}>Predefinidos</div>
+        {savedDefaults.length === 0 ? (
+          <span style={libraryEmptyStyle}>
+            Salve uma aba como predefinido pelo painel direito.
+          </span>
+        ) : (
+          savedDefaults.map((record) => (
+            <div key={record.id} style={savedDefaultItemStyle}>
+              <button
+                onClick={() => onInjectDefault(record)}
+                style={savedDefaultAddBtnStyle}
+                title="Injetar como aba editável"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 15, color: 'var(--text-muted)' }}>
+                  download
+                </span>
+                <span style={libraryItemTextStyle}>
+                  <span style={libraryItemNameStyle}>{record.titulo}</span>
+                  <span style={libraryItemKindStyle}>{record.tipo}</span>
+                </span>
+              </button>
+              <button
+                onClick={() => onDeleteDefault(record.id)}
+                style={savedDefaultDeleteBtnStyle}
+                title="Excluir predefinido"
+                aria-label={`Excluir predefinido ${record.titulo}`}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 14 }}>delete</span>
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ComposeTabs({
+  compose,
+  selectedSectionId,
+  primarySectionId,
+  onSelectSection,
+  onDeleteSection,
+  onNewFile,
+}: {
+  compose: ComposeState | null;
+  selectedSectionId: string | null;
+  primarySectionId: string | null;
+  onSelectSection: (sectionId: string) => void;
+  onDeleteSection: (sectionId: string) => void;
+  onNewFile: () => void;
+}) {
+  const sections = compose?.sections ?? [];
+  const canDelete = sections.length > 1;
+
+  return (
+    <div style={composeTabBarStyle} role="tablist" aria-label="Seções do compose">
+      {sections.map((section) => {
+        const active = section.id === selectedSectionId;
+        const isPrimary = section.id === primarySectionId;
+        return (
+          <div
+            key={section.id}
+            role="tab"
+            aria-selected={active}
+            onClick={() => onSelectSection(section.id)}
+            style={{
+              ...composeTabStyle,
+              background: active ? 'var(--bg-overlay)' : 'transparent',
+              borderColor: active ? 'var(--text-primary)' : 'var(--border)',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+            }}
+            title={section.filename}
+          >
+            <span className="material-symbols-outlined" style={composeTabIconStyle}>
+              {COMPOSE_ARTIFACTS.find((artifact) => artifact.id === section.tipo)?.icon ?? 'description'}
             </span>
-          )}
-          {section.files.map((f) => (
-            <label key={f.path} style={checkItemStyle}>
-              <input
-                type="checkbox"
-                checked={checked.has(f.path)}
-                onChange={() => onToggle(f.path)}
-                style={{ accentColor: 'var(--accent)', margin: 0, flexShrink: 0 }}
-              />
-              <span style={libraryItemTextStyle}>
-                <span style={libraryItemNameStyle}>{f.displayName}</span>
-                <span style={libraryItemKindStyle}>{f.kind}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      ))}
+            <span style={composeTabLabelStyle}>{section.titulo}{isPrimary ? ' ·' : ''}</span>
+            {canDelete && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDeleteSection(section.id); }}
+                style={composeTabCloseStyle}
+                title="Excluir esta seção"
+                aria-label={`Excluir seção ${section.titulo}`}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 13 }}>close</span>
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <button
+        onClick={onNewFile}
+        style={composeTabNewStyle}
+        title="Nova seção em branco"
+        aria-label="New file"
+        disabled={!compose}
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: 16 }}>add</span>
+        <span style={composeTabNewLabelStyle}>New file</span>
+      </button>
     </div>
   );
 }
 
 function ComposeEditor({
-  compose,
-  selectedSectionId,
-  onSelectSection,
+  section,
   onChangeSection,
 }: {
-  compose: ComposeState | null;
-  selectedSectionId: string | null;
-  onSelectSection: (sectionId: string) => void;
+  section: ComposeSection | null;
   onChangeSection: (sectionId: string, content: string) => void;
 }) {
-  if (!compose) {
+  if (!section) {
     return (
       <div style={composeEmptyStyle}>
         Nenhuma seção carregada.
@@ -960,68 +994,24 @@ function ComposeEditor({
   }
 
   return (
-    <div style={composeScrollStyle}>
-      {compose.sections.map((section) => (
-        <ComposeSectionEditor
-          key={section.id}
-          section={section}
-          isPrimary={section.id === compose.primarySectionId}
-          isSelected={section.id === selectedSectionId}
-          onSelect={() => onSelectSection(section.id)}
-          onChange={(content) => onChangeSection(section.id, content)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ComposeSectionEditor({
-  section,
-  isPrimary,
-  isSelected,
-  onSelect,
-  onChange,
-}: {
-  section: ComposeSection;
-  isPrimary: boolean;
-  isSelected: boolean;
-  onSelect: () => void;
-  onChange: (content: string) => void;
-}) {
-  return (
-    <section
-      style={{
-        ...composeSectionStyle,
-        border: isSelected ? '1px solid var(--text-primary)' : composeSectionStyle.border,
-      }}
-      onClick={onSelect}
-    >
-      <div style={composeSectionHeaderStyle}>
-        <span className="material-symbols-outlined" style={composeSectionIconStyle}>
-          {COMPOSE_ARTIFACTS.find((artifact) => artifact.id === section.tipo)?.icon ?? 'description'}
-        </span>
-        <div style={composeSectionTitleWrapStyle}>
-          <strong style={composeSectionTitleStyle}>{section.titulo}</strong>
-          <span style={composeSectionMetaStyle}>
-            {section.filename}{isPrimary ? ' · principal' : ''}
-          </span>
-        </div>
-      </div>
+    <div style={composeEditorWrapStyle}>
+      <span style={composeEditorMetaStyle}>{section.filename}</span>
       <textarea
         value={section.content}
-        onFocus={onSelect}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChangeSection(section.id, e.target.value)}
         spellCheck={false}
-        style={composeTextareaStyle}
+        style={composeEditorTextareaStyle}
         aria-label={`Editar seção ${section.titulo}`}
       />
-    </section>
+    </div>
   );
 }
 
 function ComposeInspector({
   section,
   onChange,
+  onSaveDefault,
+  savingDefault,
 }: {
   section: ComposeSection | null;
   onChange: (
@@ -1031,6 +1021,8 @@ function ComposeInspector({
       'tipo' | 'titulo' | 'filename' | 'directory' | 'isPinned' | 'category' | 'includeInAgent' | 'injectionMode'
     >>,
   ) => void;
+  onSaveDefault: (section: ComposeSection) => void;
+  savingDefault: boolean;
 }) {
   if (!section) {
     return (
@@ -1052,23 +1044,18 @@ function ComposeInspector({
   return (
     <aside style={inspectorStyle}>
       <div>
-        <div style={inspectorTitleStyle}>Inspector</div>
+        <div style={inspectorTitleStyle}>Config</div>
         <div style={inspectorSubtitleStyle}>{section.titulo}</div>
       </div>
 
-      <InspectorField label="Tipo">
-        <select
-          value={section.tipo}
-          onChange={(e) => updateType(e.target.value as ComposeSectionType)}
-          style={inspectorInputStyle}
-        >
-          {COMPOSE_ARTIFACTS.map((artifact) => (
-            <option key={artifact.id} value={artifact.id}>{artifact.name}</option>
-          ))}
-        </select>
-      </InspectorField>
+      <SelectField
+        label="Tipo"
+        value={section.tipo}
+        options={COMPOSE_ARTIFACTS.map((artifact) => ({ value: artifact.id, label: artifact.name }))}
+        onChange={(v) => updateType(v as ComposeSectionType)}
+      />
 
-      <InspectorField label="Nome do arquivo">
+      <InspectorField label="Arquivo">
         <input
           value={section.filename}
           onChange={(e) => onChange(section.id, { filename: e.target.value })}
@@ -1077,7 +1064,7 @@ function ComposeInspector({
         />
       </InspectorField>
 
-      <InspectorField label="Diretório destino">
+      <InspectorField label="Diretório">
         <input
           value={section.directory}
           onChange={(e) => onChange(section.id, { directory: e.target.value })}
@@ -1086,54 +1073,26 @@ function ComposeInspector({
         />
       </InspectorField>
 
-      <InspectorField label="Categoria do default">
-        <select
-          value={section.category}
-          onChange={(e) => onChange(section.id, { category: e.target.value as ComposeSectionCategory })}
-          style={inspectorInputStyle}
-        >
-          <option value="primary">Principal</option>
-          <option value="artifact">Artefato</option>
-        </select>
-      </InspectorField>
+      <SelectField
+        label="Modo"
+        value={section.injectionMode}
+        options={[
+          { value: 'create', label: 'Criar' },
+          { value: 'overwrite', label: 'Sobrescrever' },
+          { value: 'append', label: 'Anexar' },
+        ]}
+        onChange={(v) => onChange(section.id, { injectionMode: v as ComposeInjectionMode })}
+      />
 
-      <InspectorField label="Modo de injeção">
-        <select
-          value={section.injectionMode}
-          onChange={(e) => onChange(section.id, { injectionMode: e.target.value as ComposeInjectionMode })}
-          style={inspectorInputStyle}
-        >
-          <option value="create">Criar</option>
-          <option value="overwrite">Sobrescrever</option>
-          <option value="append">Anexar</option>
-        </select>
-      </InspectorField>
-
-      <label style={inspectorCheckStyle}>
-        <input
-          type="checkbox"
-          checked={section.isPinned}
-          onChange={(e) => onChange(section.id, { isPinned: e.target.checked })}
-          style={inspectorCheckboxStyle}
-        />
-        <span>
-          <strong style={inspectorCheckTitleStyle}>Fixar como default</strong>
-          <span style={inspectorCheckHintStyle}>Usar esta seção como principal.</span>
-        </span>
-      </label>
-
-      <label style={inspectorCheckStyle}>
-        <input
-          type="checkbox"
-          checked={section.includeInAgent}
-          onChange={(e) => onChange(section.id, { includeInAgent: e.target.checked })}
-          style={inspectorCheckboxStyle}
-        />
-        <span>
-          <strong style={inspectorCheckTitleStyle}>Importar no Agent</strong>
-          <span style={inspectorCheckHintStyle}>Referenciar este markdown no agente gerado.</span>
-        </span>
-      </label>
+      <button
+        onClick={() => onSaveDefault(section)}
+        disabled={savingDefault}
+        style={{ ...inspectorSaveDefaultBtnStyle, opacity: savingDefault ? 0.45 : 1 }}
+        title="Salvar esta seção como fixado para reutilizar em composições futuras"
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: 15 }}>push_pin</span>
+        {savingDefault ? 'Fixando...' : 'Salvar como fixado'}
+      </button>
     </aside>
   );
 }
@@ -1166,9 +1125,9 @@ function InjectionReview({
     <div style={reviewWrapStyle}>
       <div style={reviewHeaderStyle}>
         <div>
-          <div style={reviewTitleStyle}>Revisao final</div>
+          <div style={reviewTitleStyle}>Revisão</div>
           <div style={reviewSubtitleStyle}>
-            {plan.length} arquivo{plan.length === 1 ? '' : 's'} pronto{plan.length === 1 ? '' : 's'} para injecao
+            {plan.length} arquivo{plan.length === 1 ? '' : 's'} pronto{plan.length === 1 ? '' : 's'} para injetar
           </div>
         </div>
         {errors.length > 0 && (
@@ -1391,121 +1350,208 @@ const inspectorInputStyle: React.CSSProperties = {
   minWidth: 0,
   background: 'var(--bg-overlay)',
   border: '0.5px solid var(--border)',
-  borderRadius: 4,
+  borderRadius: 6,
   color: 'var(--text-primary)',
   fontFamily: 'var(--font-ui)',
   fontSize: 'var(--text-xs)',
   outline: 'none',
   padding: '7px 8px',
+  colorScheme: 'inherit',
 };
 
-const inspectorCheckStyle: React.CSSProperties = {
+
+const customSelectTriggerStyle: React.CSSProperties = {
+  width: '100%',
+  minWidth: 0,
   display: 'flex',
-  alignItems: 'flex-start',
-  gap: 9,
-  cursor: 'pointer',
-  color: 'var(--text-secondary)',
-};
-
-const inspectorCheckboxStyle: React.CSSProperties = {
-  marginTop: 2,
-  accentColor: 'var(--accent)',
-  flexShrink: 0,
-};
-
-const inspectorCheckTitleStyle: React.CSSProperties = {
-  display: 'block',
-  fontFamily: 'var(--font-ui)',
-  fontSize: 'var(--text-sm)',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 6,
+  background: 'var(--bg-overlay)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 6,
   color: 'var(--text-primary)',
-  fontWeight: 500,
-};
-
-const inspectorCheckHintStyle: React.CSSProperties = {
-  display: 'block',
-  marginTop: 2,
   fontFamily: 'var(--font-ui)',
   fontSize: 'var(--text-xs)',
-  color: 'var(--text-muted)',
-  lineHeight: 1.35,
+  outline: 'none',
+  padding: '7px 8px',
+  cursor: 'pointer',
+  textAlign: 'left',
 };
 
-const previewLabelStyle: React.CSSProperties = {
-  fontFamily: 'var(--font-ui)',
-  fontSize: 'var(--text-xs)',
-  color: 'var(--text-muted)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.06em',
-  paddingLeft: 20,
-  paddingBottom: 10,
-  flexShrink: 0,
-};
-
-const composeScrollStyle: React.CSSProperties = {
-  flex: 1,
-  overflowY: 'auto',
-  paddingLeft: 20,
-  paddingRight: 20,
-  paddingBottom: 16,
+const customDropdownListStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: '100%',
+  left: 0,
+  right: 0,
+  marginTop: 4,
+  background: 'var(--bg-surface)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 8,
+  boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+  zIndex: 200,
+  overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
-  gap: 14,
+  padding: '4px',
 };
 
-const composeSectionStyle: React.CSSProperties = {
+const customDropdownItemStyle: React.CSSProperties = {
+  width: '100%',
+  textAlign: 'left',
+  padding: '6px 8px',
+  background: 'none',
+  border: 'none',
+  borderRadius: 4,
+  cursor: 'pointer',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+};
+
+const inspectorSaveDefaultBtnStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 6,
+  marginTop: 4,
+  padding: '7px 10px',
+  background: 'var(--bg-overlay)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 4,
+  color: 'var(--text-secondary)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  cursor: 'pointer',
+};
+
+const savedDefaultItemStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '2px 0',
+};
+
+const savedDefaultAddBtnStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  padding: '3px 0',
+  textAlign: 'left',
+};
+
+const savedDefaultDeleteBtnStyle: React.CSSProperties = {
+  width: 20,
+  height: 20,
+  flexShrink: 0,
+  borderRadius: '50%',
+  border: '0.5px solid var(--border)',
+  background: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
+  color: 'var(--text-muted)',
+};
+
+const composeTabBarStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  flexWrap: 'wrap',
+  padding: '0 20px 12px',
+  flexShrink: 0,
+};
+
+const composeTabStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  maxWidth: 180,
+  padding: '5px 8px 5px 9px',
+  borderRadius: 6,
+  border: '0.5px solid var(--border)',
+  cursor: 'pointer',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  transition: 'background 100ms ease, border-color 100ms ease, color 100ms ease',
+};
+
+const composeTabIconStyle: React.CSSProperties = {
+  fontSize: 15,
+  flexShrink: 0,
+};
+
+const composeTabLabelStyle: React.CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const composeTabCloseStyle: React.CSSProperties = {
+  width: 16,
+  height: 16,
+  flexShrink: 0,
+  borderRadius: '50%',
+  border: 'none',
+  background: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
+  color: 'var(--text-muted)',
+};
+
+const composeTabNewStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '5px 10px 5px 7px',
+  borderRadius: 6,
+  border: '0.5px dashed var(--border)',
+  background: 'none',
+  cursor: 'pointer',
+  color: 'var(--text-muted)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+};
+
+const composeTabNewLabelStyle: React.CSSProperties = {
+  whiteSpace: 'nowrap',
+};
+
+const composeEditorWrapStyle: React.CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
+  padding: '0 20px 16px',
+};
+
+const composeEditorMetaStyle: React.CSSProperties = {
+  display: 'block',
+  marginBottom: 8,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 11,
+  color: 'var(--text-muted)',
+};
+
+const composeEditorTextareaStyle: React.CSSProperties = {
+  flex: 1,
+  width: '100%',
+  minHeight: 0,
+  display: 'block',
+  resize: 'none',
   background: 'var(--bg-surface)',
   border: '0.5px solid var(--border)',
   borderRadius: 6,
-  overflow: 'hidden',
-};
-
-const composeSectionHeaderStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-  padding: '9px 12px',
-  borderBottom: '0.5px solid var(--border)',
-  background: 'var(--bg-overlay)',
-};
-
-const composeSectionIconStyle: React.CSSProperties = {
-  fontSize: 17,
-  color: 'var(--text-muted)',
-  flexShrink: 0,
-};
-
-const composeSectionTitleWrapStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  minWidth: 0,
-};
-
-const composeSectionTitleStyle: React.CSSProperties = {
-  fontFamily: 'var(--font-ui)',
-  fontSize: 'var(--text-sm)',
-  color: 'var(--text-primary)',
-  fontWeight: 500,
-};
-
-const composeSectionMetaStyle: React.CSSProperties = {
-  marginTop: 2,
-  fontFamily: 'var(--font-mono)',
-  fontSize: 10,
-  color: 'var(--text-muted)',
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-};
-
-const composeTextareaStyle: React.CSSProperties = {
-  width: '100%',
-  minHeight: 180,
-  display: 'block',
-  border: 'none',
   outline: 'none',
-  resize: 'vertical',
-  background: 'transparent',
-  padding: '12px',
+  padding: '14px',
   fontFamily: 'var(--font-mono)',
   fontSize: 12,
   lineHeight: 1.6,
@@ -1514,6 +1560,7 @@ const composeTextareaStyle: React.CSSProperties = {
 };
 
 const composeEmptyStyle: React.CSSProperties = {
+  flex: 1,
   padding: '0 20px',
   color: 'var(--text-muted)',
   fontFamily: 'var(--font-ui)',
@@ -1536,36 +1583,28 @@ const sectionLabelStyle: React.CSSProperties = {
   letterSpacing: '0.06em',
 };
 
-const libraryCreateStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: 6,
-};
-
-const libraryInputStyle: React.CSSProperties = {
-  background: 'var(--bg-overlay)',
-  border: '0.5px solid var(--border)',
-  borderRadius: 4,
-  color: 'var(--text-primary)',
+const libraryHintStyle: React.CSSProperties = {
+  marginTop: 6,
   fontFamily: 'var(--font-ui)',
-  outline: 'none',
-  width: '100%',
-  minWidth: 0,
-  padding: '6px 8px',
   fontSize: 'var(--text-xs)',
+  color: 'var(--text-muted)',
+  lineHeight: 1.4,
 };
 
-const libraryCreateBtnStyle: React.CSSProperties = {
-  width: 28,
-  height: 28,
-  borderRadius: 4,
-  border: '0.5px solid var(--border)',
-  background: 'var(--bg-surface)',
+const librarySubLabelStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-muted)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  cursor: 'pointer',
-  flexShrink: 0,
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  marginBottom: 2,
+};
+
+const libraryEmptyStyle: React.CSSProperties = {
+  fontSize: 'var(--text-xs)',
+  color: 'var(--text-muted)',
+  padding: '2px 0 4px',
+  lineHeight: 1.4,
 };
 
 const helperTextStyle: React.CSSProperties = {
@@ -1575,13 +1614,6 @@ const helperTextStyle: React.CSSProperties = {
   color: 'var(--text-muted)',
 };
 
-const checkItemStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'flex-start',
-  gap: 8,
-  cursor: 'pointer',
-  padding: '3px 0',
-};
 
 const libraryItemTextStyle: React.CSSProperties = {
   minWidth: 0,
@@ -1898,6 +1930,16 @@ const reviewEmptyStyle: React.CSSProperties = {
 
 const reviewBlockingStyle: React.CSSProperties = {
   padding: '8px 10px',
+  borderRadius: 4,
+  background: 'rgba(239,68,68,0.08)',
+  color: '#ef4444',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 'var(--text-xs)',
+  lineHeight: 1.4,
+};
+
+const defaultsErrorStyle: React.CSSProperties = {
+  padding: '6px 8px',
   borderRadius: 4,
   background: 'rgba(239,68,68,0.08)',
   color: '#ef4444',

@@ -16,6 +16,8 @@ function applyTheme(theme: Theme) {
   const t = tokens[theme];
   const root = document.documentElement;
   root.setAttribute('data-theme', theme);
+  // Make native controls (select option lists, scrollbars) follow the theme.
+  root.style.setProperty('color-scheme', theme);
   root.style.setProperty('--bg-primary', t.bg.primary);
   root.style.setProperty('--bg-surface', t.bg.surface);
   root.style.setProperty('--bg-overlay', t.bg.overlay);

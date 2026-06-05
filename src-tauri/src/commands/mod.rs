@@ -1,3 +1,4 @@
+pub mod compose_defaults;
 pub mod fs;
 pub mod injection;
 pub mod sessions;

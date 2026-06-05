@@ -50,6 +50,9 @@ pub fn run() {
             commands::injection::inject_agent_file,
             commands::injection::save_injection_history,
             commands::injection::get_recent_inject_paths,
+            commands::compose_defaults::save_compose_default,
+            commands::compose_defaults::list_compose_defaults,
+            commands::compose_defaults::delete_compose_default,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

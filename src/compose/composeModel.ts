@@ -252,6 +252,191 @@ export function syncComposeAgentReferences(compose: ComposeState | null): Compos
   return changed ? { ...compose, sections, updatedAt: Date.now() } : compose;
 }
 
+export interface ComposeSectionDefault {
+  titulo: string;
+  tipo: ComposeSectionType;
+  category: ComposeSectionCategory;
+  content: string;
+  filename: string;
+  includeInAgent: boolean;
+  injectionMode: ComposeInjectionMode;
+}
+
+function coerceSectionType(value: string): ComposeSectionType {
+  return (COMPOSE_SECTION_TYPES as readonly string[]).includes(value)
+    ? (value as ComposeSectionType)
+    : 'markdown';
+}
+
+function coerceInjectionMode(value: unknown): ComposeInjectionMode {
+  return value === 'overwrite' || value === 'append' ? value : 'create';
+}
+
+/**
+ * Derive a stable id for a saved default from its identity (tipo + titulo).
+ * Saving the same section twice yields the same id, so the backend UPSERT
+ * updates the existing row instead of creating a duplicate "Fixado".
+ */
+export function composeDefaultId(section: Pick<ComposeSection, 'tipo' | 'titulo'>): string {
+  const slug = section.titulo
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '');
+  return `default-${section.tipo}-${slug || 'sem-titulo'}`;
+}
+
+/** Build a reusable default from a compose section (without the per-target directory). */
+export function toComposeSectionDefault(section: ComposeSection): ComposeSectionDefault {
+  return {
+    titulo: section.titulo,
+    tipo: section.tipo,
+    category: section.category,
+    content: section.content,
+    filename: section.filename,
+    includeInAgent: section.includeInAgent,
+    injectionMode: section.injectionMode,
+  };
+}
+
+/** Reconstruct a default from a persisted record (content/category/tipo + metadata blob). */
+export function composeSectionDefaultFromRecord(record: {
+  titulo: string;
+  content: string;
+  category: string;
+  tipo: string;
+  metadata: string;
+}): ComposeSectionDefault {
+  let metadata: Record<string, unknown> = {};
+  try {
+    metadata = JSON.parse(record.metadata) as Record<string, unknown>;
+  } catch {
+    metadata = {};
+  }
+
+  const tipo = coerceSectionType(record.tipo);
+  return {
+    titulo: record.titulo,
+    tipo,
+    category: record.category === 'primary' ? 'primary' : 'artifact',
+    content: record.content,
+    filename:
+      typeof metadata.filename === 'string' && metadata.filename.trim()
+        ? metadata.filename
+        : COMPOSE_ARTIFACT_BY_ID.get(tipo)?.defaultFilename ?? 'markdown.md',
+    includeInAgent:
+      typeof metadata.includeInAgent === 'boolean' ? metadata.includeInAgent : true,
+    injectionMode: coerceInjectionMode(metadata.injectionMode),
+  };
+}
+
+/**
+ * Add a saved default as a new artifact section in the current compose.
+ * Deduplicates: if a section with the same titulo + tipo + content already
+ * exists, it is reused instead of appending a duplicate (returns it unchanged).
+ */
+export function addComposeSectionFromDefault(
+  compose: ComposeState | null,
+  def: ComposeSectionDefault,
+  targetDirectory: string,
+): ComposeState | null {
+  if (!compose) return compose;
+
+  const alreadyPresent = compose.sections.some(
+    (section) =>
+      section.tipo === def.tipo &&
+      section.titulo === def.titulo &&
+      section.content === def.content,
+  );
+  if (alreadyPresent) return compose;
+
+  const section: ComposeSection = {
+    id: createComposeId('section'),
+    tipo: def.tipo,
+    titulo: def.titulo,
+    filename: def.filename,
+    directory: targetDirectory,
+    content: def.content,
+    isPinned: false,
+    category: 'artifact',
+    includeInAgent: def.includeInAgent,
+    injectionMode: def.injectionMode,
+  };
+
+  return syncComposeAgentReferences({
+    ...compose,
+    sections: [...compose.sections, section],
+    updatedAt: Date.now(),
+  });
+}
+
+/** Create a fresh, empty markdown section for the "New file" action. */
+export function createBlankComposeSection(
+  targetDirectory: string,
+  tipo: ComposeSectionType = 'markdown',
+): ComposeSection {
+  const artifact = COMPOSE_ARTIFACT_BY_ID.get(tipo)!;
+  return {
+    id: createComposeId('section'),
+    tipo,
+    titulo: artifact.name,
+    filename: artifact.defaultFilename,
+    directory: targetDirectory,
+    content: createDefaultSectionContent(tipo, ''),
+    isPinned: false,
+    category: 'artifact',
+    includeInAgent: artifact.includeInAgentByDefault,
+    injectionMode: 'create',
+  };
+}
+
+/** Append an arbitrary section to the compose state. */
+export function addComposeSection(
+  compose: ComposeState | null,
+  section: ComposeSection,
+): ComposeState | null {
+  if (!compose) return compose;
+  return syncComposeAgentReferences({
+    ...compose,
+    sections: [...compose.sections, section],
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * Remove a section by id. Refuses to remove the last remaining section.
+ * Reassigns the primary section if the removed one was primary.
+ */
+export function removeComposeSection(
+  compose: ComposeState | null,
+  sectionId: string,
+): ComposeState | null {
+  if (!compose) return compose;
+  if (compose.sections.length <= 1) return compose;
+  if (!compose.sections.some((section) => section.id === sectionId)) return compose;
+
+  const remaining = compose.sections.filter((section) => section.id !== sectionId);
+  let primarySectionId = compose.primarySectionId;
+
+  if (primarySectionId === sectionId) {
+    const nextPrimary = remaining.find((section) => section.tipo === 'agent') ?? remaining[0];
+    primarySectionId = nextPrimary.id;
+  }
+
+  const sections = remaining.map((section) => ({
+    ...section,
+    isPinned: section.id === primarySectionId,
+    category: section.id === primarySectionId ? 'primary' : section.category === 'primary' ? 'artifact' : section.category,
+  } satisfies ComposeSection));
+
+  return syncComposeAgentReferences({
+    ...compose,
+    primarySectionId,
+    sections,
+    updatedAt: Date.now(),
+  });
+}
+
 export function createDefaultSectionContent(tipo: ComposeSectionType, agentContent: string): string {
   if (tipo === 'agent') return agentContent;
   return MINIMAL_SECTION_CONTENT[tipo];

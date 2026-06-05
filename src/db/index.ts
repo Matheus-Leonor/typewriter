@@ -29,6 +29,26 @@ export interface ComposeDraftRecord {
   updated_at: number;
 }
 
+export interface ComposeDefaultRecord {
+  id: string;
+  titulo: string;
+  content: string;
+  category: string;
+  tipo: string;
+  metadata: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ComposeDefaultInput {
+  id: string;
+  titulo: string;
+  content: string;
+  category: string;
+  tipo: string;
+  metadata: string;
+}
+
 export interface SessionPatch {
   title?: string;
   content?: string;
@@ -110,5 +130,14 @@ export const db = {
       invoke<void>('save_injection_history', { entry }),
     getRecentPaths: (limit = 5) =>
       invoke<string[]>('get_recent_inject_paths', { limit }),
+  },
+
+  composeDefaults: {
+    save: (entry: ComposeDefaultInput) =>
+      invoke<void>('save_compose_default', { entry }),
+    list: () =>
+      invoke<ComposeDefaultRecord[]>('list_compose_defaults'),
+    delete: (id: string) =>
+      invoke<void>('delete_compose_default', { id }),
   },
 };
