@@ -15,22 +15,51 @@ const ThemeContext = createContext<ThemeContextValue>({
 function applyTheme(theme: Theme) {
   const t = tokens[theme];
   const root = document.documentElement;
+  const set = (k: string, v: string) => root.style.setProperty(k, v);
+
   root.setAttribute('data-theme', theme);
   // Make native controls (select option lists, scrollbars) follow the theme.
-  root.style.setProperty('color-scheme', theme);
-  root.style.setProperty('--bg-primary', t.bg.primary);
-  root.style.setProperty('--bg-surface', t.bg.surface);
-  root.style.setProperty('--bg-overlay', t.bg.overlay);
-  root.style.setProperty('--text-primary', t.text.primary);
-  root.style.setProperty('--text-secondary', t.text.secondary);
-  root.style.setProperty('--text-muted', t.text.muted);
-  root.style.setProperty('--border', t.border);
-  root.style.setProperty('--accent', t.accent);
-  root.style.setProperty('--accent-muted', t.accentMuted);
-  root.style.setProperty('--selection-bg', t.selection);
-  root.style.setProperty('--font-ui', t.font.ui);
-  root.style.setProperty('--font-mono', t.font.mono);
-  root.style.setProperty('--font-editor', t.font.editor);
+  set('color-scheme', theme);
+
+  // ── DS Island vars (consumidas por island.css: .is-* / .cx-* / .rad-*) ────
+  set('--backdrop', t.backdrop);
+  set('--bg', t.bg);
+  set('--surface', t.surface);
+  set('--surface-2', t.surface2);
+  set('--elevated', t.elevated);
+  set('--hair', t.hair);
+  set('--hair-2', t.hair2);
+  set('--overlay', t.overlay);
+  set('--ink', t.ink);
+  set('--ink-2', t.ink2);
+  set('--ink-3', t.ink3);
+  set('--ink-4', t.ink4);
+  set('--accent', t.accent);
+  set('--accent-h', t.accentH);
+  set('--accent-d', t.accentD);
+  set('--accent-bg', t.accentBg);
+  set('--accent-bd', t.accentBd);
+  set('--shadow-island', t.shadowIsland);
+  set('--shadow-menu', t.shadowMenu);
+
+  // ── bridge: aliases legados usados pelos componentes existentes ──────────
+  set('--bg-primary', t.bg);
+  set('--bg-surface', t.surface);
+  set('--bg-overlay', t.overlaySubtle);
+  // ── frame vs ilha (Islands JetBrains): o app/frame e o "mar" (backdrop);
+  //    o conteudo flutua como ilha (surface). TopBar/Sidebar usam --bg-app;
+  //    editor/terminal/preview usam --bg-island. ─────────────────────────────
+  set('--bg-app', t.backdrop);
+  set('--bg-island', t.surface);
+  set('--text-primary', t.ink);
+  set('--text-secondary', t.ink2);
+  set('--text-muted', t.ink3);
+  set('--border', t.hair);
+  set('--accent-muted', t.accentBg);
+  set('--selection-bg', t.selection);
+
+  // Fontes: Geist (UI/editor) + Geist Mono (codigo). Definidas estaticamente
+  // em global.css :root; o editor pode ser sobrescrito em runtime.
 }
 
 function getSystemTheme(): Theme {

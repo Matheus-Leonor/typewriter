@@ -22,9 +22,10 @@ interface Props {
   vaultPath: string;
   onOpenFile: (path: string, content: string, name: string) => void;
   externalSort?: SortMode;
+  activePath?: string | null;
 }
 
-export function FileExplorer({ vaultPath, onOpenFile, externalSort }: Props) {
+export function FileExplorer({ vaultPath, onOpenFile, externalSort, activePath }: Props) {
   const [childrenMap, setChildrenMap] = useState<Map<string, FsEntry[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [internalSort, setInternalSort] = useState<SortMode>('name');
@@ -261,6 +262,7 @@ export function FileExplorer({ vaultPath, onOpenFile, externalSort }: Props) {
             expanded={expanded}
             childrenMap={childrenMap}
             sortEntries={sortEntries}
+            activePath={activePath}
             renamingPath={renamingPath}
             renameValue={renameValue}
             creating={creating}
@@ -309,6 +311,7 @@ interface EntryTreeProps {
   expanded: Set<string>;
   childrenMap: Map<string, FsEntry[]>;
   sortEntries: (e: FsEntry[]) => FsEntry[];
+  activePath?: string | null;
   renamingPath: string | null;
   renameValue: string;
   creating: { dirPath: string; type: 'note' | 'folder' } | null;
@@ -325,7 +328,7 @@ interface EntryTreeProps {
 }
 
 function EntryTree({
-  entry, depth, expanded, childrenMap, sortEntries,
+  entry, depth, expanded, childrenMap, sortEntries, activePath,
   renamingPath, renameValue, creating, newItemName,
   onToggleExpand, onOpenFile, onContextMenu,
   onRenameChange, onRenameCommit, onRenameCancel,
@@ -334,6 +337,7 @@ function EntryTree({
   const [hovered, setHovered] = useState(false);
   const isExpanded = expanded.has(entry.path);
   const children = childrenMap.get(entry.path) ?? [];
+  const isSelected = !entry.is_dir && activePath != null && entry.path === activePath;
 
   const indent = depth * 14 + 8;
 
@@ -373,11 +377,18 @@ function EntryTree({
           paddingRight: 8,
           paddingTop: 3,
           paddingBottom: 3,
+          marginLeft: 4,
+          marginRight: 4,
+          borderRadius: 6,
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           gap: 5,
-          background: hovered ? 'var(--bg-overlay)' : 'transparent',
+          background: isSelected
+            ? 'var(--bg-island)'
+            : hovered
+              ? 'var(--bg-overlay)'
+              : 'transparent',
           userSelect: 'none',
         }}
       >
@@ -419,6 +430,7 @@ function EntryTree({
               expanded={expanded}
               childrenMap={childrenMap}
               sortEntries={sortEntries}
+              activePath={activePath}
               renamingPath={renamingPath}
               renameValue={renameValue}
               creating={creating}

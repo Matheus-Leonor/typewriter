@@ -15,6 +15,9 @@ import { TaskListsDialog } from './components/TaskListsDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { AgentConfigDialog } from './components/AgentConfigDialog';
 import { TitleBar, SidebarTab } from './components/TitleBar';
+import { RadialMenu, RadialItem } from './components/RadialMenu';
+import { Terminal } from './components/Terminal';
+import { MarkdownPreview } from './components/MarkdownPreview';
 import './theme/global.css';
 
 interface ActiveFile {
@@ -38,6 +41,10 @@ function AppInner() {
   const [taskListsDialogOpen, setTaskListsDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [agentConfigOpen, setAgentConfigOpen] = useState(false);
+  const [radialOpen, setRadialOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [liveContent, setLiveContent] = useState('');
 
   useEffect(() => {
     async function init() {
@@ -113,6 +120,12 @@ function AppInner() {
     setActiveFile({ path, content, name });
   }, []);
 
+  // Conteudo "ao vivo" para o preview: inicializa ao trocar de arquivo/sessao.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setLiveContent(activeFile ? activeFile.content : currentSession?.content ?? '');
+  }, [activeFile?.path, currentSession?.id]);
+
   // Ctrl+B toggles sidebar; Ctrl+Shift+J opens JSON formatter
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -127,6 +140,18 @@ function AppInner() {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'G') {
         e.preventDefault();
         setAgentConfigOpen((o) => !o);
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'k') {
+        e.preventDefault();
+        setRadialOpen((o) => !o);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '`') {
+        e.preventDefault();
+        setTerminalOpen((o) => !o);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
+        e.preventDefault();
+        setPreviewOpen((o) => !o);
       }
     };
     window.addEventListener('keydown', handler);
@@ -157,10 +182,14 @@ function AppInner() {
   if (!vaultChecked) {
     return (
       <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
-          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
-            DevScribe
-          </span>
+        <div className="is-mid">
+          <div className="is-content">
+            <div className="is-island" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
+                TypeWriter
+              </span>
+            </div>
+          </div>
         </div>
       </AppShell>
     );
@@ -169,7 +198,13 @@ function AppInner() {
   if (!vaultPath) {
     return (
       <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
-        <VaultScreen recentPath={recentVaultPath} onVaultReady={handleVaultReady} />
+        <div className="is-mid">
+          <div className="is-content">
+            <div className="is-island" style={{ flex: 1 }}>
+              <VaultScreen recentPath={recentVaultPath} onVaultReady={handleVaultReady} />
+            </div>
+          </div>
+        </div>
       </AppShell>
     );
   }
@@ -177,22 +212,37 @@ function AppInner() {
   if (!ready) {
     return (
       <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
-          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
-            DevScribe
-          </span>
+        <div className="is-mid">
+          <div className="is-content">
+            <div className="is-island" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
+                TypeWriter
+              </span>
+            </div>
+          </div>
         </div>
       </AppShell>
     );
   }
 
   return (
-    <AppShell sidebarOpen={sidebarOpen} sidebarTab={sidebarTab} onToggleSidebar={handleToggleSidebar} onOpenFiles={handleOpenFiles} onOpenSearch={handleOpenSearch}>
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+    <AppShell
+      sidebarOpen={sidebarOpen}
+      sidebarTab={sidebarTab}
+      onToggleSidebar={handleToggleSidebar}
+      onOpenFiles={handleOpenFiles}
+      onOpenSearch={handleOpenSearch}
+      terminalOpen={terminalOpen}
+      previewOpen={previewOpen}
+      onToggleTerminal={() => setTerminalOpen((o) => !o)}
+      onTogglePreview={() => setPreviewOpen((o) => !o)}
+    >
+      <div className="is-mid">
         <SessionSidebar
           open={sidebarOpen}
           tab={sidebarTab}
           vaultPath={vaultPath}
+          activePath={activeFile?.path}
           onOpenFile={(path, content, name) => { setActiveFile(null); setTimeout(() => handleOpenFile(path, content, name), 0); }}
           onOpenJsonFormatter={() => setJsonDialogOpen(true)}
           onOpenTaskLists={() => setTaskListsDialogOpen(true)}
@@ -200,28 +250,45 @@ function AppInner() {
           onOpenAgentConfig={() => setAgentConfigOpen(true)}
         />
 
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {activeFile ? (
-            <FileEditorPane
-              file={activeFile}
-              cursorStyle={cursorStyle}
-              cursorBlink={cursorBlink}
-              onOpenJsonFormatter={() => setJsonDialogOpen(true)}
+        <div className="is-content">
+          <div className={`is-center${terminalOpen ? ' has-terminal' : ''}`} style={{ flex: 1 }}>
+            <main className="is-island" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {activeFile ? (
+                <FileEditorPane
+                  file={activeFile}
+                  cursorStyle={cursorStyle}
+                  cursorBlink={cursorBlink}
+                  onOpenJsonFormatter={() => setJsonDialogOpen(true)}
+                  onContentChange={setLiveContent}
+                />
+              ) : currentSession ? (
+                <EditorPane
+                  session={currentSession}
+                  onSessionChange={handleSessionChange}
+                  cursorStyle={cursorStyle}
+                  cursorBlink={cursorBlink}
+                  onOpenJsonFormatter={() => setJsonDialogOpen(true)}
+                  onContentChange={setLiveContent}
+                />
+              ) : (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 'var(--text-sm)' }}>
+                  Abra um arquivo pelo explorador
+                </div>
+              )}
+            </main>
+            {terminalOpen && (
+              <Terminal cwdLabel={vaultLabel(vaultPath)} onClose={() => setTerminalOpen(false)} />
+            )}
+          </div>
+
+          {previewOpen && (
+            <MarkdownPreview
+              content={liveContent}
+              title={activeFile?.name?.replace(/\.md$/, '') ?? currentSession?.title ?? 'Preview'}
+              onClose={() => setPreviewOpen(false)}
             />
-          ) : currentSession ? (
-            <EditorPane
-              session={currentSession}
-              onSessionChange={handleSessionChange}
-              cursorStyle={cursorStyle}
-              cursorBlink={cursorBlink}
-              onOpenJsonFormatter={() => setJsonDialogOpen(true)}
-            />
-          ) : (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 'var(--text-sm)' }}>
-              Abra um arquivo pelo explorador
-            </div>
           )}
-        </main>
+        </div>
       </div>
 
       <StatusBar session={activeFile ? null : currentSession} />
@@ -248,8 +315,27 @@ function AppInner() {
           onClose={() => setAgentConfigOpen(false)}
         />
       )}
+
+      <RadialMenu
+        open={radialOpen}
+        onClose={() => setRadialOpen(false)}
+        items={[
+          { icon: 'data_object', label: 'JSON Formatter', onRun: () => setJsonDialogOpen(true) },
+          { icon: 'terminal', label: 'Terminal', onRun: () => setTerminalOpen((o) => !o) },
+          { icon: 'visibility', label: 'Preview', onRun: () => setPreviewOpen((o) => !o) },
+          { icon: 'checklist', label: 'Tarefas', onRun: () => setTaskListsDialogOpen(true) },
+          { icon: 'smart_toy', label: 'Agent Config', onRun: () => setAgentConfigOpen(true) },
+          { icon: 'settings', label: 'Configurações', onRun: () => setSettingsDialogOpen(true) },
+        ] satisfies RadialItem[]}
+      />
     </AppShell>
   );
+}
+
+function vaultLabel(path: string | null): string {
+  if (!path) return 'typewriter';
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? 'typewriter';
 }
 
 function AppShell({
@@ -259,6 +345,10 @@ function AppShell({
   onToggleSidebar,
   onOpenFiles,
   onOpenSearch,
+  terminalOpen,
+  previewOpen,
+  onToggleTerminal,
+  onTogglePreview,
 }: {
   children: React.ReactNode;
   sidebarOpen: boolean;
@@ -266,31 +356,38 @@ function AppShell({
   onToggleSidebar: () => void;
   onOpenFiles: () => void;
   onOpenSearch: () => void;
+  terminalOpen?: boolean;
+  previewOpen?: boolean;
+  onToggleTerminal?: () => void;
+  onTogglePreview?: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+    <div className="is-root">
       <TitleBar
         sidebarOpen={sidebarOpen}
         sidebarTab={sidebarTab}
         onToggleSidebar={onToggleSidebar}
         onOpenFiles={onOpenFiles}
         onOpenSearch={onOpenSearch}
+        terminalOpen={terminalOpen}
+        previewOpen={previewOpen}
+        onToggleTerminal={onToggleTerminal}
+        onTogglePreview={onTogglePreview}
       />
-      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {children}
-      </div>
+      {children}
     </div>
   );
 }
 
 function EditorPane({
-  session, onSessionChange, cursorStyle, cursorBlink, onOpenJsonFormatter,
+  session, onSessionChange, cursorStyle, cursorBlink, onOpenJsonFormatter, onContentChange,
 }: {
   session: Session;
   onSessionChange: (s: Session) => void;
   cursorStyle: CursorStyle;
   cursorBlink: CursorBlink;
   onOpenJsonFormatter: () => void;
+  onContentChange: (content: string) => void;
 }) {
   const { updateContent } = useSession(session, onSessionChange);
   const isKineticMode = session.content_type === 'free' || session.content_type === 'markdown';
@@ -298,7 +395,7 @@ function EditorPane({
   return (
     <Editor
       session={session}
-      onUpdate={updateContent}
+      onUpdate={(c) => { updateContent(c); onContentChange(c); }}
       kineticEnabled={isKineticMode}
       cursorStyle={cursorStyle}
       cursorBlink={cursorBlink}
@@ -308,12 +405,13 @@ function EditorPane({
 }
 
 function FileEditorPane({
-  file, cursorStyle, cursorBlink, onOpenJsonFormatter,
+  file, cursorStyle, cursorBlink, onOpenJsonFormatter, onContentChange,
 }: {
   file: ActiveFile;
   cursorStyle: CursorStyle;
   cursorBlink: CursorBlink;
   onOpenJsonFormatter: () => void;
+  onContentChange: (content: string) => void;
 }) {
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -329,11 +427,12 @@ function FileEditorPane({
   };
 
   const handleUpdate = useCallback((content: string) => {
+    onContentChange(content);
     clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
       invoke('write_file', { path: file.path, content }).catch(console.error);
     }, 500);
-  }, [file.path]);
+  }, [file.path, onContentChange]);
 
   return (
     <Editor

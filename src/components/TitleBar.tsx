@@ -11,19 +11,21 @@ interface Props {
   onToggleSidebar: () => void;
   onOpenFiles: () => void;
   onOpenSearch: () => void;
+  terminalOpen?: boolean;
+  previewOpen?: boolean;
+  onToggleTerminal?: () => void;
+  onTogglePreview?: () => void;
 }
 
-export function TitleBar({ sidebarOpen, sidebarTab, onToggleSidebar, onOpenFiles, onOpenSearch }: Props) {
+export function TitleBar({
+  sidebarOpen, sidebarTab, onToggleSidebar, onOpenFiles, onOpenSearch,
+  terminalOpen, previewOpen, onToggleTerminal, onTogglePreview,
+}: Props) {
   return (
     <div
       data-tauri-drag-region
+      className="is-topbar"
       style={{
-        height: 38,
-        flexShrink: 0,
-        display: 'flex',
-        alignItems: 'center',
-        background: 'var(--bg-surface)',
-        borderBottom: '0.5px solid var(--border)',
         userSelect: 'none',
         WebkitUserSelect: 'none',
       }}
@@ -52,6 +54,26 @@ export function TitleBar({ sidebarOpen, sidebarTab, onToggleSidebar, onOpenFiles
 
       {/* Drag region spacer */}
       <div data-tauri-drag-region style={{ flex: 1 }} />
+
+      {/* Right — panel toggles */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingRight: 6 }}>
+        {onToggleTerminal && (
+          <NavBtn
+            icon="dock_to_bottom"
+            label={terminalOpen ? 'Fechar terminal  Ctrl+`' : 'Terminal  Ctrl+`'}
+            active={!!terminalOpen}
+            onClick={onToggleTerminal}
+          />
+        )}
+        {onTogglePreview && (
+          <NavBtn
+            icon={previewOpen ? 'right_panel_close' : 'right_panel_open'}
+            label={previewOpen ? 'Fechar preview  Ctrl+Shift+P' : 'Preview markdown  Ctrl+Shift+P'}
+            active={!!previewOpen}
+            onClick={onTogglePreview}
+          />
+        )}
+      </div>
 
       {/* Right — window controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingRight: 4 }}>

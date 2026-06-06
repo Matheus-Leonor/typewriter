@@ -7,16 +7,12 @@ interface Props {
 export function StatusBar({ session }: Props) {
   return (
     <div
-      className="ds-status-bar"
+      className="ds-status-bar is-status"
       style={{
-        height: 26,
         flexShrink: 0,
-        borderTop: `0.5px solid var(--border)`,
         display: 'flex',
         alignItems: 'center',
-        padding: '0 var(--space-4)',
         gap: 'var(--space-4)',
-        background: 'var(--bg-primary)',
       }}
     >
       <div style={{ flex: 1 }} />

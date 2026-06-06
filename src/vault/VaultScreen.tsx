@@ -51,8 +51,8 @@ const containerStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  height: '100vh',
-  background: 'var(--bg-primary)',
+  height: '100%',
+  background: 'transparent',
 };
 
 const cardStyle: React.CSSProperties = {

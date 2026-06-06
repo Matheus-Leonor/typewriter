@@ -9,6 +9,7 @@ interface Props {
   open: boolean;
   tab: SidebarTab;
   vaultPath: string;
+  activePath?: string | null;
   onOpenFile: (path: string, content: string, name: string) => void;
   onOpenJsonFormatter: () => void;
   onOpenTaskLists: () => void;
@@ -20,6 +21,7 @@ export function SessionSidebar({
   open,
   tab,
   vaultPath,
+  activePath,
   onOpenFile,
   onOpenJsonFormatter,
   onOpenTaskLists,
@@ -45,14 +47,9 @@ export function SessionSidebar({
 
   return (
     <aside
-      className="ds-sidebar"
+      className="ds-sidebar is-sidebar"
       style={{
-        display: 'flex',
         flexDirection: 'row',
-        borderRight: `0.5px solid var(--border)`,
-        background: 'var(--bg-surface)',
-        flexShrink: 0,
-        overflow: 'hidden',
       }}
     >
       {/* Vertical icon ribbon — utility tools only */}
@@ -130,7 +127,7 @@ export function SessionSidebar({
 
         {/* Panel content */}
         {tab === 'files' && (
-          <FileExplorer vaultPath={vaultPath} onOpenFile={onOpenFile} externalSort={sort} />
+          <FileExplorer vaultPath={vaultPath} onOpenFile={onOpenFile} externalSort={sort} activePath={activePath} />
         )}
 
         {tab === 'search' && (
